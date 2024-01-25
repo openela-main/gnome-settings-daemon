@@ -1,0 +1,141 @@
+From d9eb6331efa92cd28a8ba3ccc1665c3744296465 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Sun, 24 Jan 2021 11:34:03 -0500
+Subject: [PATCH 13/15] subman: Improve subscription status handling
+
+This commit improves how subscription-manager status is
+parsed to give more detailed information about subscription
+state.
+---
+ plugins/subman/gsd-subscription-manager.c | 33 +++++++++++++++++++----
+ 1 file changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+index 705f8b11..6d80bfa9 100644
+--- a/plugins/subman/gsd-subscription-manager.c
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -262,93 +262,116 @@ _client_subscription_status_update (GsdSubscriptionManager *manager, GError **er
+ 	GsdSubscriptionManagerPrivate *priv = manager->priv;
+ 	g_autoptr(GVariant) uuid = NULL;
+ 	const gchar *uuid_txt = NULL;
+ 	JsonNode *json_root;
+ 	JsonObject *json_obj;
+ 	const gchar *json_txt = NULL;
+ 	g_autoptr(GVariant) status = NULL;
+ 	g_autoptr(JsonParser) json_parser = json_parser_new ();
+ 
+ 	/* save old value */
+ 	priv->subscription_status_last = priv->subscription_status;
+ 	if (!_client_installed_products_update (manager, error))
+ 		goto out;
+ 
+ 	if (priv->installed_products->len == 0) {
+ 		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS;
+ 		goto out;
+ 	}
+ 
+ 	uuid = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_CONSUMER],
+ 				       "GetUuid",
+ 				       g_variant_new ("(s)",
+ 				                      "C.UTF-8"),
+ 				       G_DBUS_CALL_FLAGS_NONE,
+ 				       -1, NULL, error);
+ 	if (uuid == NULL)
+ 		return FALSE;
+ 
+ 	g_variant_get (uuid, "(&s)", &uuid_txt);
+ 
++	if (uuid_txt[0] == '\0') {
++		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN;
++		goto out;
++	}
++
+ 	status = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_ENTITLEMENT],
+ 				         "GetStatus",
+ 				         g_variant_new ("(ss)",
+ 						        "", /* assumed as 'now' */
+ 						        "C.UTF-8"),
+ 				         G_DBUS_CALL_FLAGS_NONE,
+ 				         -1, NULL, error);
+ 	if (status == NULL)
+ 		return FALSE;
+ 	g_variant_get (status, "(&s)", &json_txt);
+ 	g_debug ("Entitlement.GetStatus JSON: %s", json_txt);
+ 	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
+ 		return FALSE;
+ 	json_root = json_parser_get_root (json_parser);
+ 	json_obj = json_node_get_object (json_root);
++
++	const gchar *status_id = NULL;
++
++	if (json_object_has_member (json_obj, "status_id")) {
++		status_id = json_object_get_string_member (json_obj, "status_id");
++	}
++
+ 	if (!json_object_has_member (json_obj, "valid")) {
+ 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+ 			     "no Entitlement.GetStatus valid in %s", json_txt);
+ 		return FALSE;
+ 	}
+ 
+ 	gboolean is_valid = json_object_get_boolean_member (json_obj, "valid");
+ 
+-	if (uuid_txt[0] != '\0') {
+-		if (is_valid) {
++	if (is_valid) {
++		if (g_strcmp0 (status_id, "disabled") != 0) {
+ 			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID;
+ 		} else {
+-			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID;
++			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED;
++		}
++		goto out;
++	}
++
++	for (guint i = 0; i < priv->installed_products->len; i++) {
++		ProductData *product = g_ptr_array_index (priv->installed_products, i);
++
++		if (g_strcmp0 (product->status, "subscribed") == 0) {
++			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID;
++			goto out;
+ 		}
+-	} else {
+-		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN;
+ 	}
+ 
++	priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID;
++
++out:
+ 	/* emit notification for g-c-c */
+ 	if (priv->subscription_status != priv->subscription_status_last) {
+ 		_emit_property_changed (manager, "SubscriptionStatus",
+ 				       g_variant_new_uint32 (priv->subscription_status));
+ 	}
+ 
+ 	return TRUE;
+ }
+ 
+ static gboolean
+ _client_syspurpose_update (GsdSubscriptionManager *manager, GError **error)
+ {
+ 	GsdSubscriptionManagerPrivate *priv = manager->priv;
+ 	JsonNode *json_root;
+ 	JsonObject *json_obj;
+ 	const gchar *json_txt = NULL;
+ 	g_autoptr(GVariant) val = NULL;
+ 	g_autoptr(JsonParser) json_parser = json_parser_new ();
+ 
+ 	val = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_SYSPURPOSE],
+ 				      "GetSyspurpose",
+ 				      g_variant_new ("(s)", "C.UTF-8"),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      -1, NULL, error);
+ 	if (val == NULL)
+ 		return FALSE;
+ 	g_variant_get (val, "(&s)", &json_txt);
+ 	g_debug ("Syspurpose.GetSyspurpose JSON: %s", json_txt);
+ 	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
+ 		return FALSE;
+-- 
+2.30.0
+

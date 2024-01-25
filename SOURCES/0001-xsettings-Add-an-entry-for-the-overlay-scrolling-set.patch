@@ -1,0 +1,25 @@
+From 6e790966c2b6e1db8dd2c145119d3fdd19e0c18f Mon Sep 17 00:00:00 2001
+From: Matthias Clasen <mclasen@redhat.com>
+Date: Wed, 22 May 2019 16:04:42 -0400
+Subject: [PATCH] xsettings: Add an entry for the overlay scrolling setting
+
+This will be used by GTK.
+---
+ plugins/xsettings/gsd-xsettings-manager.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/plugins/xsettings/gsd-xsettings-manager.c b/plugins/xsettings/gsd-xsettings-manager.c
+index c3ac7892..4164de40 100644
+--- a/plugins/xsettings/gsd-xsettings-manager.c
++++ b/plugins/xsettings/gsd-xsettings-manager.c
+@@ -478,6 +478,7 @@ static TranslationEntry translations [] = {
+         { "org.gnome.desktop.interface", "icon-theme",             "Net/IconThemeName",       translate_string_string },
+         { "org.gnome.desktop.interface", "cursor-theme",           "Gtk/CursorThemeName",     translate_string_string },
+         { "org.gnome.desktop.interface", "gtk-enable-primary-paste", "Gtk/EnablePrimaryPaste", translate_bool_int },
++        { "org.gnome.desktop.interface", "overlay-scrolling",      "Gtk/OverlayScrolling",    translate_bool_int },
+         /* cursor-size is handled via the Xft side as it needs the scaling factor */
+ 
+         { "org.gnome.desktop.sound", "theme-name",                 "Net/SoundThemeName",            translate_string_string },
+-- 
+2.23.0
+

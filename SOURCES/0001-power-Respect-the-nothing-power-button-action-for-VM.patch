@@ -1,0 +1,59 @@
+From 0e2c4aec104b65d2f8ea7167269e91c303908a6f Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Wed, 4 Jan 2023 15:30:15 +0100
+Subject: [PATCH] power: Respect the "nothing" power-button-action for VMs
+
+There are use-cases when one wants to forcefully make the guest ignore
+poweroff requests from the hypervisor.
+
+See https://bugzilla.redhat.com/2062051
+
+See also https://gitlab.gnome.org/GNOME/gnome-settings-daemon/-/issues/46
+---
+ ...org.gnome.settings-daemon.plugins.power.gschema.xml.in | 2 +-
+ plugins/media-keys/gsd-media-keys-manager.c               | 8 +++++---
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in b/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
+index 93c704e9..fc61d133 100644
+--- a/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
++++ b/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
+@@ -39,7 +39,7 @@
+     <key name="power-button-action" enum="org.gnome.settings-daemon.GsdPowerButtonActionType">
+       <default>'suspend'</default>
+       <summary>Power button action</summary>
+-      <description>The action to take when the system power button is pressed. This action is hard-coded (and the setting ignored) on virtual machines (power off) and tablets (suspend).</description>
++      <description>The action to take when the system power button is pressed. Virtual machines only honor the 'nothing' action, and will shutdown otherwise. Tablets always suspend, ignoring all the other action options.</description>
+     </key>
+   </schema>
+ </schemalist>
+diff --git a/plugins/media-keys/gsd-media-keys-manager.c b/plugins/media-keys/gsd-media-keys-manager.c
+index a526d5cf..ac6f7ab4 100644
+--- a/plugins/media-keys/gsd-media-keys-manager.c
++++ b/plugins/media-keys/gsd-media-keys-manager.c
+@@ -2083,9 +2083,12 @@ do_config_power_button_action (GsdMediaKeysManager *manager,
+         if (manager->priv->power_button_disabled)
+                 return;
+ 
+-        /* Always power off VMs when power off is pressed in the menus */
++        action_type = g_settings_get_enum (manager->priv->power_settings, "power-button-action");
++        /* Always power off VMs, except when power-button-action is "nothing" */
+         if (g_strcmp0 (manager->priv->chassis_type, "vm") == 0) {
+-                power_action (manager, "PowerOff", !in_lock_screen);
++                if (action_type != GSD_POWER_BUTTON_ACTION_NOTHING)
++                        power_action (manager, "PowerOff", !in_lock_screen);
++
+                 return;
+         }
+ 
+@@ -2095,7 +2098,6 @@ do_config_power_button_action (GsdMediaKeysManager *manager,
+                 return;
+         }
+ 
+-        action_type = g_settings_get_enum (manager->priv->power_settings, "power-button-action");
+         switch (action_type) {
+         case GSD_POWER_BUTTON_ACTION_SUSPEND:
+                 action = GSD_POWER_ACTION_SUSPEND;
+-- 
+2.37.1
+

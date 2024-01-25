@@ -1,0 +1,110 @@
+From ff98c03c88e53041dcc861de3b3a3351d55297fe Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Fri, 9 Nov 2018 10:39:11 -0500
+Subject: [PATCH 4/4] account: don't poll more frequently than notification
+ period
+
+At the moment, if an account has no reason to receive a notification,
+the account plugin ends up polling continuously, desperately,
+and unsuccessfully trying to find a reason to notify. That leads
+to unnecessary CPU utilization.
+
+The reason is an apparent think-o in the code.  The code tracks
+the last time a notification was shown, so it knows when to show
+the next notification later, even if the notification period, or
+account policy is updated by the admin in the interim.
+
+The problem is that it's wrong to look at the last notification
+time if there's no reason to show a notification.  In that case
+the wakeup is merely to poll updates on the account policy.
+
+This commit addresses the problem by only looking at the previous
+notification time, if it was within the current notification period.
+---
+ plugins/account/gsd-account-manager.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/account/gsd-account-manager.c b/plugins/account/gsd-account-manager.c
+index ff054edd..b48c0fe8 100644
+--- a/plugins/account/gsd-account-manager.c
++++ b/plugins/account/gsd-account-manager.c
+@@ -207,65 +207,73 @@ out:
+ }
+ 
+ static gboolean
+ set_policy_number (gint64 *destination,
+                    gint64  source)
+ {
+         if (*destination == source)
+                 return FALSE;
+ 
+         *destination = source;
+         return TRUE;
+ }
+ 
+ static gboolean
+ on_notify_period_elapsed (GsdAccountManager *manager)
+ {
+         manager->priv->notify_period_timeout_id = 0;
+         fetch_password_expiration_policy (manager);
+         return G_SOURCE_REMOVE;
+ }
+ 
+ static void
+ queue_periodic_timeout (GsdAccountManager *manager)
+ {
+         if (manager->priv->notify_period_timeout_id != 0) {
+                 g_source_remove (manager->priv->notify_period_timeout_id);
+                 manager->priv->notify_period_timeout_id = 0;
+         }
+ 
+         if (manager->priv->notify_period > 0) {
+-                gint64 already_elapsed_time;
++                gint64 seconds_since_last_notification;
++                guint seconds_between_notifications;
++                guint seconds_until_next_notification;
+ 
+-                already_elapsed_time = MAX (0, (g_get_monotonic_time () - manager->priv->last_notify_time) / G_USEC_PER_SEC);
++                seconds_since_last_notification = MAX (0, (g_get_monotonic_time () - manager->priv->last_notify_time) / G_USEC_PER_SEC);
++                seconds_between_notifications = manager->priv->notify_period * 60;
+ 
+-                manager->priv->notify_period_timeout_id = g_timeout_add_seconds (MAX (0, manager->priv->notify_period * 60 - already_elapsed_time),
++                if (seconds_since_last_notification > seconds_between_notifications)
++                        seconds_until_next_notification = seconds_between_notifications;
++                else
++                        seconds_until_next_notification = seconds_between_notifications - seconds_since_last_notification;
++
++                manager->priv->notify_period_timeout_id = g_timeout_add_seconds (seconds_until_next_notification,
+                                                                                  (GSourceFunc) on_notify_period_elapsed,
+                                                                                  manager);
+         }
+ }
+ 
+ static void
+ on_got_password_expiration_policy (GsdAccountsUser *accounts_user_proxy,
+                                    GAsyncResult    *res,
+                                    gpointer         user_data)
+ {
+         GsdAccountManager *manager = user_data;
+         g_autoptr(GError)  error = NULL;
+         gboolean           succeeded;
+         gint64             expiration_time;
+         gint64             last_change_time;
+         gint64             min_days_between_changes;
+         gint64             max_days_between_changes;
+         gint64             days_to_warn;
+         gint64             days_after_expiration_until_lock;
+ 
+         gnome_settings_profile_start (NULL);
+         succeeded = gsd_accounts_user_call_get_password_expiration_policy_finish (accounts_user_proxy,
+                                                                                   &expiration_time,
+                                                                                   &last_change_time,
+                                                                                   &min_days_between_changes,
+                                                                                   &max_days_between_changes,
+                                                                                   &days_to_warn,
+                                                                                   &days_after_expiration_until_lock,
+                                                                                   res,
+                                                                                   &error);
+-- 
+2.21.0
+

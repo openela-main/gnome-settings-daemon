@@ -1,0 +1,259 @@
+From 3bb3b2b09d34deafadd3cfe3355137afab20cb23 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Sun, 24 Jan 2021 11:27:42 -0500
+Subject: [PATCH 12/15] subman: Add DBus API to subscribe for updates on
+ already registered system
+
+It's possible an admin may have registered their system without
+attaching any subscriptions to it.
+
+At the moment, gnome-settings-daemon only provides a way to register
+and subscribe in one step.
+
+This commit adds an API to support doing the last half of the process
+on its own.
+---
+ plugins/subman/gsd-subscription-manager.c | 51 +++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+index 1f9ca447..705f8b11 100644
+--- a/plugins/subman/gsd-subscription-manager.c
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -19,60 +19,61 @@
+  */
+ 
+ #include "config.h"
+ 
+ #include <glib/gi18n.h>
+ #include <gio/gunixinputstream.h>
+ #include <gdk/gdk.h>
+ #include <gtk/gtk.h>
+ #include <json-glib/json-glib.h>
+ #include <libnotify/notify.h>
+ 
+ #include "gnome-settings-profile.h"
+ #include "gsd-subman-common.h"
+ #include "gsd-subscription-manager.h"
+ 
+ #define GSD_DBUS_NAME "org.gnome.SettingsDaemon"
+ #define GSD_DBUS_PATH "/org/gnome/SettingsDaemon"
+ #define GSD_DBUS_BASE_INTERFACE "org.gnome.SettingsDaemon"
+ 
+ #define GSD_SUBSCRIPTION_DBUS_NAME		GSD_DBUS_NAME ".Subscription"
+ #define GSD_SUBSCRIPTION_DBUS_PATH		GSD_DBUS_PATH "/Subscription"
+ #define GSD_SUBSCRIPTION_DBUS_INTERFACE		GSD_DBUS_BASE_INTERFACE ".Subscription"
+ 
+ static const gchar introspection_xml[] =
+ "<node>"
+ "  <interface name='org.gnome.SettingsDaemon.Subscription'>"
+ "    <method name='Register'>"
+ "      <arg type='a{sv}' name='options' direction='in'/>"
+ "    </method>"
+ "    <method name='Unregister'/>"
++"    <method name='Attach'/>"
+ "    <property name='InstalledProducts' type='aa{sv}' access='read'/>"
+ "    <property name='SubscriptionStatus' type='u' access='read'/>"
+ "  </interface>"
+ "</node>";
+ 
+ #define GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), GSD_TYPE_SUBSCRIPTION_MANAGER, GsdSubscriptionManagerPrivate))
+ 
+ typedef enum {
+ 	_RHSM_INTERFACE_CONFIG,
+ 	_RHSM_INTERFACE_REGISTER_SERVER,
+ 	_RHSM_INTERFACE_ATTACH,
+ 	_RHSM_INTERFACE_ENTITLEMENT,
+ 	_RHSM_INTERFACE_PRODUCTS,
+ 	_RHSM_INTERFACE_CONSUMER,
+ 	_RHSM_INTERFACE_SYSPURPOSE,
+ 	_RHSM_INTERFACE_LAST
+ } _RhsmInterface;
+ 
+ struct GsdSubscriptionManagerPrivate
+ {
+ 	/* D-Bus */
+ 	guint		 name_id;
+ 	GDBusNodeInfo	*introspection_data;
+ 	GDBusConnection	*connection;
+ 	GCancellable	*bus_cancellable;
+ 
+ 	GDBusProxy	*proxies[_RHSM_INTERFACE_LAST];
+ 	GHashTable	*config; 	/* str:str */
+ 	GPtrArray	*installed_products;
+ 	gchar		*address;
+@@ -669,60 +670,104 @@ _client_register (GsdSubscriptionManager *manager,
+ }
+ 
+ static gboolean
+ _client_unregister (GsdSubscriptionManager *manager, GError **error)
+ {
+ 	g_autoptr(GSubprocess) subprocess = NULL;
+ 
+ 	/* apparently: "we can't send registration credentials over the regular
+ 	 * system or session bus since those aren't really locked down..." */
+ 	if (!_client_register_start (manager, error))
+ 		return FALSE;
+ 	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
+ 	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDERR_PIPE, error,
+ 				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
+ 				       "--kind", "unregister",
+ 				       NULL);
+ 	if (subprocess == NULL) {
+ 		g_prefix_error (error, "failed to find pkexec: ");
+ 		return FALSE;
+ 	}
+ 	if (!_client_subprocess_wait_check (subprocess, error))
+ 		return FALSE;
+ 	if (!_client_subscription_status_update (manager, error))
+ 		return FALSE;
+ 	if (!_client_installed_products_update (manager, error))
+ 		return FALSE;
+ 	_client_maybe__show_notification (manager);
+ 	return TRUE;
+ }
+ 
++static gboolean
++_client_attach (GsdSubscriptionManager *manager,
++		GError **error)
++{
++	g_autoptr(GSubprocess) subprocess = NULL;
++	g_autoptr(GBytes) stderr_buf = NULL;
++	gint rc;
++
++	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
++	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDERR_PIPE,
++				       error,
++				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
++				       "--kind", "auto-attach",
++				       NULL);
++	if (subprocess == NULL) {
++		g_prefix_error (error, "failed to find pkexec: ");
++		return FALSE;
++	}
++
++	if (!g_subprocess_communicate (subprocess, NULL, NULL, NULL, &stderr_buf, error)) {
++		g_prefix_error (error, "failed to run pkexec: ");
++		return FALSE;
++	}
++
++	rc = g_subprocess_get_exit_status (subprocess);
++	if (rc != 0) {
++		if (g_bytes_get_size (stderr_buf) == 0) {
++			g_set_error_literal (error, G_IO_ERROR, rc,
++			                     "Failed to run helper without stderr");
++			return FALSE;
++		}
++
++		g_set_error (error, G_IO_ERROR, rc,
++			     "%.*s",
++			     (int) g_bytes_get_size (stderr_buf),
++			     (char *) g_bytes_get_data (stderr_buf, NULL));
++	}
++
++	if (!_client_subscription_status_update (manager, error))
++		return FALSE;
++	_client_maybe__show_notification (manager);
++	return TRUE;
++}
++
+ static gboolean
+ _client_update_config (GsdSubscriptionManager *manager, GError **error)
+ {
+ 	GsdSubscriptionManagerPrivate *priv = manager->priv;
+ 	g_autoptr(GVariant) val = NULL;
+ 	g_autoptr(GVariant) val_server = NULL;
+ 	g_autoptr(GVariantDict) dict = NULL;
+ 	GVariantIter iter;
+ 	gchar *key;
+ 	gchar *value;
+ 
+ 	val = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_CONFIG],
+ 				      "GetAll",
+ 				      g_variant_new ("(s)", "C.UTF-8"),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      -1, NULL, error);
+ 	if (val == NULL)
+ 		return FALSE;
+ 	dict = g_variant_dict_new (g_variant_get_child_value (val, 0));
+ 	val_server = g_variant_dict_lookup_value (dict, "server", G_VARIANT_TYPE("a{ss}"));
+ 	if (val_server != NULL) {
+ 		g_variant_iter_init (&iter, val_server);
+ 		while (g_variant_iter_next (&iter, "{ss}", &key, &value)) {
+ 			g_debug ("%s=%s", key, value);
+ 			g_hash_table_insert (priv->config,
+ 					     g_steal_pointer (&key),
+ 					     g_steal_pointer (&value));
+ 		}
+ 	}
+ 	return TRUE;
+@@ -1002,60 +1047,66 @@ handle_method_call (GDBusConnection       *connection,
+ 				g_dbus_method_invocation_return_gerror (invocation, error);
+ 				return;
+ 			}
+ 		} else if (g_strcmp0 (kind, "key") == 0) {
+ 			const gchar *activation_key = NULL;
+ 			g_variant_dict_lookup (dict, "hostname", "&s", &hostname);
+ 			g_variant_dict_lookup (dict, "organisation", "&s", &organisation);
+ 			g_variant_dict_lookup (dict, "activation-key", "&s", &activation_key);
+ 			if (!_client_register_with_keys (manager,
+ 							       hostname,
+ 							       organisation,
+ 							       activation_key,
+ 							       &error)) {
+ 				g_dbus_method_invocation_return_gerror (invocation, error);
+ 				return;
+ 			}
+ 		} else {
+ 			g_dbus_method_invocation_return_error_literal (invocation,
+ 								       G_IO_ERROR, G_IO_ERROR_FAILED,
+ 								       "Invalid kind specified");
+ 
+ 			return;
+ 		}
+ 		g_dbus_method_invocation_return_value (invocation, NULL);
+ 	} else if (g_strcmp0 (method_name, "Unregister") == 0) {
+ 		if (!_client_unregister (manager, &error)) {
+ 			g_dbus_method_invocation_return_gerror (invocation, error);
+ 			return;
+ 		}
+ 		g_dbus_method_invocation_return_value (invocation, NULL);
++	} else if (g_strcmp0 (method_name, "Attach") == 0) {
++		if (!_client_attach (manager, &error)) {
++			g_dbus_method_invocation_return_gerror (invocation, error);
++			return;
++		}
++		g_dbus_method_invocation_return_value (invocation, NULL);
+ 	} else {
+ 		g_assert_not_reached ();
+ 	}
+ }
+ 
+ static GVariant *
+ handle_get_property (GDBusConnection *connection,
+ 		     const gchar *sender,
+ 		     const gchar *object_path,
+ 		     const gchar *interface_name,
+ 		     const gchar *property_name,
+ 		     GError **error, gpointer user_data)
+ {
+ 	GsdSubscriptionManager *manager = GSD_SUBSCRIPTION_MANAGER (user_data);
+ 	GsdSubscriptionManagerPrivate *priv = manager->priv;
+ 
+ 	if (g_strcmp0 (interface_name, GSD_SUBSCRIPTION_DBUS_INTERFACE) != 0) {
+ 		g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+ 			     "No such interface: %s", interface_name);
+ 		return NULL;
+ 	}
+ 
+ 	if (g_strcmp0 (property_name, "SubscriptionStatus") == 0)
+ 		return g_variant_new_uint32 (priv->subscription_status);
+ 
+ 	if (g_strcmp0 (property_name, "InstalledProducts") == 0)
+ 		return _make_installed_products_variant (priv->installed_products);
+ 
+ 	g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+ 		     "Failed to get property: %s", property_name);
+-- 
+2.30.0
+

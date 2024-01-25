@@ -1,0 +1,451 @@
+From 31844edad70876e26ab995179bc67fb3b23a1793 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 6 Nov 2017 16:39:55 -0500
+Subject: [PATCH 3/4] account: display nag screen periodically
+
+This is configurable via a gsettings key.
+---
+ data/meson.build                              |  1 +
+ ...ings-daemon.plugins.account.gschema.xml.in |  9 +++
+ plugins/account/gsd-account-manager.c         | 55 +++++++++++++++++++
+ 3 files changed, 65 insertions(+)
+ create mode 100644 data/org.gnome.settings-daemon.plugins.account.gschema.xml.in
+
+diff --git a/data/meson.build b/data/meson.build
+index e93ba641..5a2cd5a7 100644
+--- a/data/meson.build
++++ b/data/meson.build
+@@ -1,36 +1,37 @@
+ data_inc = include_directories('.')
+ 
+ schemas = [
+   'org.gnome.settings-daemon.peripherals.gschema.xml',
+   'org.gnome.settings-daemon.peripherals.wacom.gschema.xml',
+   'org.gnome.settings-daemon.plugins.gschema.xml',
++  'org.gnome.settings-daemon.plugins.account.gschema.xml',
+   'org.gnome.settings-daemon.plugins.color.gschema.xml',
+   'org.gnome.settings-daemon.plugins.housekeeping.gschema.xml',
+   'org.gnome.settings-daemon.plugins.media-keys.gschema.xml',
+   'org.gnome.settings-daemon.plugins.power.gschema.xml',
+   'org.gnome.settings-daemon.plugins.sharing.gschema.xml',
+   'org.gnome.settings-daemon.plugins.xsettings.gschema.xml'
+ ]
+ 
+ schema_conf = configuration_data()
+ schema_conf.set('GETTEXT_PACKAGE', meson.project_name())
+ 
+ schemas_xml = []
+ foreach schema: schemas
+   schemas_xml += [configure_file(
+     input: schema + '.in',
+     output: schema,
+     configuration: schema_conf,
+     install: true,
+     install_dir: gsd_schemadir
+   )]
+ endforeach
+ 
+ enums_header = files('gsd-enums.h')
+ 
+ mkenums = gnome.mkenums(
+   'org.gnome.settings-daemon.enums.xml',
+   sources: enums_header,
+   comments: '<!-- @comment@ -->',
+   fhead: '<schemalist>',
+   vhead: '  <@type@ id="org.gnome.settings-daemon.@EnumName@">',
+diff --git a/data/org.gnome.settings-daemon.plugins.account.gschema.xml.in b/data/org.gnome.settings-daemon.plugins.account.gschema.xml.in
+new file mode 100644
+index 00000000..f3d59e81
+--- /dev/null
++++ b/data/org.gnome.settings-daemon.plugins.account.gschema.xml.in
+@@ -0,0 +1,9 @@
++<schemalist>
++  <schema gettext-domain="@GETTEXT_PACKAGE@" id="org.gnome.settings-daemon.plugins.account" path="/org/gnome/settings-daemon/plugins/account/">
++    <key name="notify-period" type="i">
++      <default>1440</default>
++      <summary>Time before repeated warning about account password expiration</summary>
++      <description>If a user's account is expiring, a notification will get displayed periodically after the specified number of minutes</description>
++    </key>
++  </schema>
++</schemalist>
+diff --git a/plugins/account/gsd-account-manager.c b/plugins/account/gsd-account-manager.c
+index cb37f466..ff054edd 100644
+--- a/plugins/account/gsd-account-manager.c
++++ b/plugins/account/gsd-account-manager.c
+@@ -20,126 +20,135 @@
+ #include "config.h"
+ 
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <string.h>
+ #include <errno.h>
+ 
+ #include <locale.h>
+ 
+ #include <glib.h>
+ #include <glib/gi18n.h>
+ #include <glib/gstdio.h>
+ 
+ #include <cups/cups.h>
+ #include <cups/ppd.h>
+ #include <libnotify/notify.h>
+ 
+ #include "gnome-settings-profile.h"
+ #include "gnome-settings-bus.h"
+ #include "gsd-account-manager.h"
+ #include "org.freedesktop.Accounts.h"
+ #include "org.freedesktop.Accounts.User.h"
+ 
+ #define GSD_ACCOUNT_MANAGER_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), GSD_TYPE_ACCOUNT_MANAGER, GsdAccountManagerPrivate))
+ 
+ struct GsdAccountManagerPrivate
+ {
++        GSettings            *settings;
++
+         GsdAccounts          *accounts_proxy;
+         GsdAccountsUser      *accounts_user_proxy;
+         GCancellable         *cancellable;
+ 
+         GsdScreenSaver       *screensaver_proxy;
+ 
+         gint64                expiration_time;
+         gint64                last_change_time;
+         gint64                min_days_between_changes;
+         gint64                max_days_between_changes;
+         gint64                days_to_warn;
+         gint64                days_after_expiration_until_lock;
+ 
+         NotifyNotification   *notification;
++
++        gint64                last_notify_time;
++        int                   notify_period;
++        guint                 notify_period_timeout_id;
+ };
+ 
+ static void     gsd_account_manager_class_init  (GsdAccountManagerClass *klass);
+ static void     gsd_account_manager_init        (GsdAccountManager      *account_manager);
+ static void     gsd_account_manager_finalize    (GObject                *object);
++static void     fetch_password_expiration_policy (GsdAccountManager *manager);
+ 
+ G_DEFINE_TYPE (GsdAccountManager, gsd_account_manager, G_TYPE_OBJECT)
+ 
+ static gpointer manager_object = NULL;
+ 
+ static void
+ on_notification_closed (NotifyNotification *notification,
+                         gpointer            user_data)
+ {
+         GsdAccountManager *manager = user_data;
+ 
+         g_clear_object (&manager->priv->notification);
+ }
+ 
+ static void
+ hide_notification (GsdAccountManager *manager)
+ {
+         if (manager->priv->notification == NULL)
+                 return;
+ 
+         notify_notification_close (manager->priv->notification, NULL);
+         g_clear_object (&manager->priv->notification);
+ }
+ 
+ static void
+ show_notification (GsdAccountManager *manager,
+                    const char        *primary_text,
+                    const char        *secondary_text)
+ {
+         g_assert (manager->priv->notification == NULL);
+ 
+         manager->priv->notification = notify_notification_new (primary_text,
+                                                                secondary_text,
+                                                                "avatar-default-symbolic");
+         notify_notification_set_app_name (manager->priv->notification, _("User Account"));
+         notify_notification_set_hint (manager->priv->notification,
+                                       "resident",
+                                       g_variant_new_boolean (TRUE));
+         notify_notification_set_timeout (manager->priv->notification,
+                                          NOTIFY_EXPIRES_NEVER);
+ 
+         g_signal_connect (manager->priv->notification,
+                           "closed",
+                           G_CALLBACK (on_notification_closed),
+                           manager);
+ 
+         notify_notification_show (manager->priv->notification, NULL);
++
++        manager->priv->last_notify_time = g_get_monotonic_time ();
+ }
+ 
+ static void
+ update_password_notification (GsdAccountManager *manager)
+ {
+         gint64           days_since_epoch;
+         gint64           days_until_expiration = -1;
+         gint64           days_since_last_change = -1;
+         gint64           days_left = -1;
+         g_autofree char *primary_text = NULL;
+         g_autofree char *secondary_text = NULL;
+         gboolean         password_already_expired = FALSE;
+ 
+         hide_notification (manager);
+ 
+         days_since_epoch = g_get_real_time () / G_USEC_PER_SEC / 60 / 60 / 24;
+ 
+         if (manager->priv->expiration_time > 0) {
+                 days_until_expiration = manager->priv->expiration_time - days_since_epoch;
+ 
+                 if (days_until_expiration <= 0) {
+                         password_already_expired = TRUE;
+                         goto out;
+                 }
+         }
+ 
+         if (manager->priv->last_change_time == 0) {
+                 password_already_expired = TRUE;
+                 goto out;
+         }
+@@ -181,99 +190,127 @@ out:
+                 primary_text = g_strdup_printf (_("Password Expired"));
+                 secondary_text = g_strdup_printf (_("Your password is expired. Please update it."));
+         } else if (days_left >= 0) {
+                 primary_text = g_strdup_printf (_("Password Expiring Soon"));
+                 if (days_left == 0)
+                     secondary_text = g_strdup_printf (_("Your password is expiring today."));
+                 else if (days_left == 1)
+                     secondary_text = g_strdup_printf (_("Your password is expiring in a day."));
+                 else
+                     secondary_text = g_strdup_printf (_("Your password is expiring in %ld days."),
+                                                       days_left);
+         }
+ 
+         if (primary_text != NULL && secondary_text != NULL)
+                 show_notification (manager,
+                                    primary_text,
+                                    secondary_text);
+ }
+ 
+ static gboolean
+ set_policy_number (gint64 *destination,
+                    gint64  source)
+ {
+         if (*destination == source)
+                 return FALSE;
+ 
+         *destination = source;
+         return TRUE;
+ }
+ 
++static gboolean
++on_notify_period_elapsed (GsdAccountManager *manager)
++{
++        manager->priv->notify_period_timeout_id = 0;
++        fetch_password_expiration_policy (manager);
++        return G_SOURCE_REMOVE;
++}
++
++static void
++queue_periodic_timeout (GsdAccountManager *manager)
++{
++        if (manager->priv->notify_period_timeout_id != 0) {
++                g_source_remove (manager->priv->notify_period_timeout_id);
++                manager->priv->notify_period_timeout_id = 0;
++        }
++
++        if (manager->priv->notify_period > 0) {
++                gint64 already_elapsed_time;
++
++                already_elapsed_time = MAX (0, (g_get_monotonic_time () - manager->priv->last_notify_time) / G_USEC_PER_SEC);
++
++                manager->priv->notify_period_timeout_id = g_timeout_add_seconds (MAX (0, manager->priv->notify_period * 60 - already_elapsed_time),
++                                                                                 (GSourceFunc) on_notify_period_elapsed,
++                                                                                 manager);
++        }
++}
++
+ static void
+ on_got_password_expiration_policy (GsdAccountsUser *accounts_user_proxy,
+                                    GAsyncResult    *res,
+                                    gpointer         user_data)
+ {
+         GsdAccountManager *manager = user_data;
+         g_autoptr(GError)  error = NULL;
+         gboolean           succeeded;
+         gint64             expiration_time;
+         gint64             last_change_time;
+         gint64             min_days_between_changes;
+         gint64             max_days_between_changes;
+         gint64             days_to_warn;
+         gint64             days_after_expiration_until_lock;
+ 
+         gnome_settings_profile_start (NULL);
+         succeeded = gsd_accounts_user_call_get_password_expiration_policy_finish (accounts_user_proxy,
+                                                                                   &expiration_time,
+                                                                                   &last_change_time,
+                                                                                   &min_days_between_changes,
+                                                                                   &max_days_between_changes,
+                                                                                   &days_to_warn,
+                                                                                   &days_after_expiration_until_lock,
+                                                                                   res,
+                                                                                   &error);
+ 
+         if (!succeeded) {
+                 g_warning ("Failed to get password expiration policy for user: %s", error->message);
+                 goto out;
+         }
+ 
+         set_policy_number (&manager->priv->expiration_time, expiration_time);
+         set_policy_number (&manager->priv->last_change_time, last_change_time);
+         set_policy_number (&manager->priv->min_days_between_changes, min_days_between_changes);
+         set_policy_number (&manager->priv->max_days_between_changes, max_days_between_changes);
+         set_policy_number (&manager->priv->days_to_warn, days_to_warn);
+         set_policy_number (&manager->priv->days_after_expiration_until_lock, days_after_expiration_until_lock);
+ 
+         update_password_notification (manager);
++        queue_periodic_timeout (manager);
+ out:
+         gnome_settings_profile_end (NULL);
+ }
+ 
+ static void
+ fetch_password_expiration_policy (GsdAccountManager *manager)
+ {
+         gsd_accounts_user_call_get_password_expiration_policy (manager->priv->accounts_user_proxy,
+                                                                manager->priv->cancellable,
+                                                                (GAsyncReadyCallback)
+                                                                on_got_password_expiration_policy,
+                                                                manager);
+ }
+ 
+ static void
+ on_screensaver_signal (GDBusProxy  *proxy,
+                        const gchar *sender_name,
+                        const gchar *signal_name,
+                        GVariant    *parameters,
+                        gpointer     user_data)
+ {
+         GsdAccountManager *manager = user_data;
+ 
+         if (g_strcmp0 (signal_name, "ActiveChanged") == 0) {
+                 gboolean active;
+ 
+                 g_variant_get (parameters, "(b)", &active);
+ 
+                 if (!active) {
+                         fetch_password_expiration_policy (manager);
+@@ -346,91 +383,109 @@ on_got_user_object_path (GsdAccounts  *accounts_proxy,
+                                      manager);
+ 
+ out:
+         gnome_settings_profile_end (NULL);
+ }
+ 
+ static void
+ on_got_accounts_proxy (GObject      *source_object,
+                        GAsyncResult *res,
+                        gpointer      user_data)
+ {
+         GsdAccountManager *manager = user_data;
+         g_autoptr(GError)  error = NULL;
+ 
+         gnome_settings_profile_start (NULL);
+         manager->priv->accounts_proxy = gsd_accounts_proxy_new_for_bus_finish (res, &error);
+ 
+         if (manager->priv->accounts_proxy != NULL) {
+                 gsd_accounts_call_find_user_by_id (manager->priv->accounts_proxy,
+                                                    getuid (),
+                                                    manager->priv->cancellable,
+                                                    (GAsyncReadyCallback)
+                                                    on_got_user_object_path,
+                                                    manager);
+         } else {
+                 g_warning ("Failed to get proxy to accounts service: %s", error->message);
+         }
+         gnome_settings_profile_end (NULL);
+ }
+ 
++static void
++on_notify_period_changed (GsdAccountManager *manager)
++{
++        manager->priv->notify_period = g_settings_get_int (manager->priv->settings, "notify-period");
++
++        queue_periodic_timeout (manager);
++}
++
+ gboolean
+ gsd_account_manager_start (GsdAccountManager  *manager,
+                            GError            **error)
+ {
+         g_debug ("Starting accounts manager");
+ 
+         gnome_settings_profile_start (NULL);
+         manager->priv->cancellable = g_cancellable_new ();
++        manager->priv->settings = g_settings_new ("org.gnome.settings-daemon.plugins.account");
++
++        manager->priv->notify_period = g_settings_get_int (manager->priv->settings, "notify-period");
++        g_signal_connect_object (G_OBJECT (manager->priv->settings),
++                          "changed::notify-period",
++                          G_CALLBACK (on_notify_period_changed),
++                          manager,
++                          G_CONNECT_SWAPPED);
++
+         gsd_accounts_proxy_new_for_bus (G_BUS_TYPE_SYSTEM,
+                                         G_DBUS_PROXY_FLAGS_NONE,
+                                         "org.freedesktop.Accounts",
+                                         "/org/freedesktop/Accounts",
+                                         manager->priv->cancellable,
+                                         (GAsyncReadyCallback)
+                                         on_got_accounts_proxy,
+                                         manager);
+         gnome_settings_profile_end (NULL);
+ 
+         return TRUE;
+ }
+ 
+ void
+ gsd_account_manager_stop (GsdAccountManager *manager)
+ {
+         g_debug ("Stopping accounts manager");
+ 
+         if (manager->priv->cancellable != NULL) {
+                 g_cancellable_cancel (manager->priv->cancellable);
+                 g_clear_object (&manager->priv->cancellable);
+         }
+ 
++        g_clear_object (&manager->priv->settings);
+         g_clear_object (&manager->priv->accounts_proxy);
+         g_clear_object (&manager->priv->accounts_user_proxy);
+         g_clear_object (&manager->priv->notification);
+         g_clear_object (&manager->priv->screensaver_proxy);
+ }
+ 
+ static void
+ gsd_account_manager_class_init (GsdAccountManagerClass *klass)
+ {
+         GObjectClass   *object_class = G_OBJECT_CLASS (klass);
+ 
+         object_class->finalize = gsd_account_manager_finalize;
+ 
+         notify_init ("gnome-settings-daemon");
+ 
+         g_type_class_add_private (klass, sizeof (GsdAccountManagerPrivate));
+ }
+ 
+ static void
+ gsd_account_manager_init (GsdAccountManager *manager)
+ {
+         manager->priv = GSD_ACCOUNT_MANAGER_GET_PRIVATE (manager);
+ }
+ 
+ static void
+ gsd_account_manager_finalize (GObject *object)
+ {
+         GsdAccountManager *manager;
+ 
+         g_return_if_fail (object != NULL);
+-- 
+2.21.0
+

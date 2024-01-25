@@ -1,0 +1,260 @@
+From 477dc8accccab568002bd19caa3fbf898bc05aad Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 25 Aug 2020 10:34:03 -0400
+Subject: [PATCH 07/15] subman: Force re-subscribe if the admin already
+ subscribed
+
+It's possible for an admin to to half-enroll the system with RHN,
+using the CLI tools.
+
+Meaning, it's possible for them to register the system with the
+service, but not attach to a purchased license for the machine,
+the, so called, entitlements.
+
+The subman module always does both halves of the registration process
+in lock step.  This means, if an admin tries to register using GNOME
+while in a half-registered state, subman will fail because the first
+step, the registration step, is already finished.
+
+This commit addresses that problem by trying to unregister up front
+before registering.
+---
+ plugins/subman/gsd-subman-helper.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
+index f84e91bf..3931ef2e 100644
+--- a/plugins/subman/gsd-subman-helper.c
++++ b/plugins/subman/gsd-subman-helper.c
+@@ -51,61 +51,60 @@ _helper_convert_error (const gchar *json_txt, GError **error)
+ 	json_root = json_parser_get_root (json_parser);
+ 	json_obj = json_node_get_object (json_root);
+ 	if (!json_object_has_member (json_obj, "message")) {
+ 		g_set_error (error,
+ 			     G_IO_ERROR,
+ 			     G_IO_ERROR_INVALID_DATA,
+ 			     "no message' in %s", json_txt);
+ 		return;
+ 	}
+ 	message = json_object_get_string_member (json_obj, "message");
+ 	if (g_strstr_len (message, -1, "Invalid user credentials") != NULL) {
+ 		g_set_error_literal (error,
+ 				     G_IO_ERROR,
+ 				     G_IO_ERROR_PERMISSION_DENIED,
+ 				     message);
+ 		return;
+ 	}
+ 	g_set_error_literal (error,
+ 			     G_IO_ERROR,
+ 			     G_IO_ERROR_NOT_SUPPORTED,
+ 			     message);
+ }
+ 
+ static gboolean
+ _helper_unregister (GError **error)
+ {
+ 	g_autoptr(GDBusProxy) proxy = NULL;
+ 	g_autoptr(GVariantBuilder) proxy_options = NULL;
+ 	g_autoptr(GVariant) res = NULL;
+ 
+-	g_debug ("unregistering");
+ 	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+ 					       NULL,
+ 					       "com.redhat.RHSM1",
+ 					       "/com/redhat/RHSM1/Unregister",
+ 					       "com.redhat.RHSM1.Unregister",
+ 					       NULL, error);
+ 	if (proxy == NULL) {
+ 		g_prefix_error (error, "Failed to get proxy: ");
+ 		return FALSE;
+ 	}
+ 	proxy_options = g_variant_builder_new (G_VARIANT_TYPE_VARDICT);
+ 	res = g_dbus_proxy_call_sync (proxy,
+ 				      "Unregister",
+ 				      g_variant_new ("(a{sv}s)",
+ 						     proxy_options,
+ 						     locale),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      DBUS_TIMEOUT,
+ 				      NULL, error);
+ 	return res != NULL;
+ }
+ 
+ static gboolean
+ _helper_auto_attach (GError **error)
+ {
+ 	const gchar *str = NULL;
+ 	g_autoptr(GDBusProxy) proxy = NULL;
+ 	g_autoptr(GVariantBuilder) proxy_options = NULL;
+@@ -208,60 +207,61 @@ main (int argc, char *argv[])
+ 		{ "prefix", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
+ 			&prefix, "Registration server prefix", NULL },
+ 		{ "port", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
+ 			&port, "Registration server port", NULL },
+ 		{ "proxy", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
+ 			&proxy_server, "Proxy settings", NULL },
+ 		{ NULL}
+ 	};
+ 
+ 	/* check calling UID */
+ 	if (getuid () != 0 || geteuid () != 0) {
+ 		g_printerr ("This program can only be used by the root user\n");
+ 		return G_IO_ERROR_NOT_SUPPORTED;
+ 	}
+ 
+ 	setlocale (LC_ALL, "");
+ 	locale = setlocale (LC_MESSAGES, NULL);
+ 
+ 	g_option_context_add_main_entries (context, options, NULL);
+ 	if (!g_option_context_parse (context, &argc, &argv, &error)) {
+ 		g_printerr ("Failed to parse arguments: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_SUPPORTED;
+ 	}
+ 
+ 	/* uncommon actions */
+ 	if (kind == NULL) {
+ 		g_printerr ("No --kind specified\n");
+ 		return G_IO_ERROR_INVALID_DATA;
+ 	}
+ 	if (g_strcmp0 (kind, "unregister") == 0) {
++	        g_debug ("unregistering");
+ 		if (!_helper_unregister (&error)) {
+ 			g_printerr ("Failed to Unregister: %s\n", error->message);
+ 			return G_IO_ERROR_NOT_INITIALIZED;
+ 		}
+ 		return EXIT_SUCCESS;
+ 	}
+ 	if (g_strcmp0 (kind, "auto-attach") == 0) {
+ 		if (!_helper_auto_attach (&error)) {
+ 			g_printerr ("Failed to AutoAttach: %s\n", error->message);
+ 			return G_IO_ERROR_NOT_INITIALIZED;
+ 		}
+ 		return EXIT_SUCCESS;
+ 	}
+ 
+ 	/* connect to abstract socket for reasons */
+ 	if (address == NULL) {
+ 		g_printerr ("No --address specified\n");
+ 		return G_IO_ERROR_INVALID_DATA;
+ 	}
+ 	conn_private = g_dbus_connection_new_for_address_sync (address,
+ 							       G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT,
+ 							       NULL, NULL,
+ 							       &error);
+ 	if (conn_private == NULL) {
+ 		g_printerr ("Invalid --address specified: %s\n", error->message);
+ 		return G_IO_ERROR_INVALID_DATA;
+ 	}
+ 	proxy = g_dbus_proxy_new_sync (conn_private,
+ 				       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+ 				       NULL, /* GDBusInterfaceInfo */
+@@ -277,96 +277,103 @@ main (int argc, char *argv[])
+ 	/* no options */
+ 	subman_options = g_variant_builder_new (G_VARIANT_TYPE("a{ss}"));
+ 
+ 	/* set registration server */
+ 	if (hostname == NULL || hostname[0] == '\0')
+ 		hostname = g_strdup ("subscription.rhsm.redhat.com");
+ 	if (prefix == NULL || prefix[0] == '\0')
+ 		prefix = g_strdup ("/subscription");
+ 	if (port == NULL || port[0] == '\0')
+ 		port = g_strdup ("443");
+ 	subman_conopts = g_variant_builder_new (G_VARIANT_TYPE("a{ss}"));
+ 	g_variant_builder_add (subman_conopts, "{ss}", "host", hostname);
+ 	g_variant_builder_add (subman_conopts, "{ss}", "handler", prefix);
+ 	g_variant_builder_add (subman_conopts, "{ss}", "port", port);
+ 
+ 	/* call into RHSM */
+ 	if (g_strcmp0 (kind, "register-with-key") == 0) {
+ 		g_auto(GStrv) activation_keys = NULL;
+ 		g_autoptr(GError) error_local = NULL;
+ 		g_autoptr(GVariant) res = NULL;
+ 
+ 		if (activation_key == NULL) {
+ 			g_printerr ("Required --activation-key\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 		if (organisation == NULL) {
+ 			g_printerr ("Required --organisation\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 
++		g_debug ("trying to unregister in case machine is already registered");
++		_helper_unregister (NULL);
++
+ 		g_debug ("registering using activation key");
+ 		activation_keys = g_strsplit (activation_key, ",", -1);
+ 		res = g_dbus_proxy_call_sync (proxy,
+ 					      "RegisterWithActivationKeys",
+ 					      g_variant_new ("(s^asa{ss}a{ss}s)",
+ 							     organisation,
+ 							     activation_keys,
+ 							     subman_options,
+ 							     subman_conopts,
+ 							     locale),
+ 					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
+ 					      DBUS_TIMEOUT,
+ 					      NULL, &error_local);
+ 		if (res == NULL) {
+ 			g_dbus_error_strip_remote_error (error_local);
+ 			_helper_convert_error (error_local->message, &error);
+ 			g_printerr ("Failed to RegisterWithActivationKeys: %s\n", error->message);
+ 			return error->code;
+ 		}
+ 	} else if (g_strcmp0 (kind, "register-with-username") == 0) {
+ 		g_autoptr(GError) error_local = NULL;
+ 		g_autoptr(GVariant) res = NULL;
+ 
+-		g_debug ("registering using username and password");
+ 		if (username == NULL) {
+ 			g_printerr ("Required --username\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 		if (password == NULL) {
+ 			g_printerr ("Required --password\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 		if (organisation == NULL) {
+ 			g_printerr ("Required --organisation\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
++
++		g_debug ("trying to unregister in case machine is already registered");
++		_helper_unregister (NULL);
++
++		g_debug ("registering using username and password");
+ 		res = g_dbus_proxy_call_sync (proxy,
+ 					      "Register",
+ 					      g_variant_new ("(sssa{ss}a{ss}s)",
+ 							     organisation,
+ 							     username,
+ 							     password,
+ 							     subman_options,
+ 							     subman_conopts,
+ 							     locale),
+ 					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
+ 					      DBUS_TIMEOUT,
+ 					      NULL, &error_local);
+ 		if (res == NULL) {
+ 			g_dbus_error_strip_remote_error (error_local);
+ 			_helper_convert_error (error_local->message, &error);
+ 			g_printerr ("Failed to Register: %s\n", error->message);
+ 			return error->code;
+ 		}
+ 	} else {
+ 		g_printerr ("Invalid --kind specified: %s\n", kind);
+ 		return G_IO_ERROR_INVALID_DATA;
+ 	}
+ 
+ 	/* set the new hostname */
+ 	if (!_helper_save_config ("server.hostname", hostname, &error)) {
+ 		g_printerr ("Failed to save hostname: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_INITIALIZED;
+ 	}
+ 	if (!_helper_save_config ("server.prefix", prefix, &error)) {
+ 		g_printerr ("Failed to save prefix: %s\n", error->message);
+-- 
+2.30.0
+

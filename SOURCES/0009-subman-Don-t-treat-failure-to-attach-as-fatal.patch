@@ -1,0 +1,310 @@
+From 1255b2b83284d262f6b8c3ceb23d499ddbf77d48 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 21 Jan 2021 09:52:19 -0500
+Subject: [PATCH 09/15] subman: Don't treat failure to attach as fatal
+
+Many organizations don't require specific subscriptions to get
+updates (called "simple content access").  At the moment,
+those systems get an error when registering.
+
+This commit quiets the error.
+---
+ plugins/subman/gsd-subman-helper.c | 46 ++++++++++++++++++++++++------
+ 1 file changed, 37 insertions(+), 9 deletions(-)
+
+diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
+index edf1e41f..53a4d56b 100644
+--- a/plugins/subman/gsd-subman-helper.c
++++ b/plugins/subman/gsd-subman-helper.c
+@@ -25,145 +25,169 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ #include <stdlib.h>
+ #include <locale.h>
+ 
+ #include <gio/gio.h>
+ #include <gio/gunixinputstream.h>
+ #include <json-glib/json-glib.h>
+ 
+ #define DBUS_TIMEOUT 300000 /* 5 minutes */
+ static const char *locale;
+ 
+ static void
+ _helper_convert_error (const gchar *json_txt, GError **error)
+ {
+ 	JsonNode *json_root;
+ 	JsonObject *json_obj;
+ 	const gchar *message;
+ 	g_autoptr(JsonParser) json_parser = json_parser_new ();
+ 
+ 	/* this may be plain text or JSON :| */
+ 	if (!json_parser_load_from_data (json_parser, json_txt, -1, NULL)) {
+ 		g_set_error_literal (error,
+ 				     G_IO_ERROR,
+ 				     G_IO_ERROR_NOT_SUPPORTED,
+ 				     json_txt);
+ 		return;
+ 	}
+ 	json_root = json_parser_get_root (json_parser);
+ 	json_obj = json_node_get_object (json_root);
++	if (json_object_has_member (json_obj, "severity")) {
++		const gchar *severity;
++
++		/* warnings are non-fatal so we ignore them
++		 */
++		severity = json_object_get_string_member (json_obj, "severity");
++		if (g_strstr_len (severity, -1, "warning") != NULL) {
++			return;
++		}
++	}
++
+ 	if (!json_object_has_member (json_obj, "message")) {
+ 		g_set_error (error,
+ 			     G_IO_ERROR,
+ 			     G_IO_ERROR_INVALID_DATA,
+ 			     "no message' in %s", json_txt);
+ 		return;
+ 	}
+ 	message = json_object_get_string_member (json_obj, "message");
+ 	if (g_strstr_len (message, -1, "Invalid user credentials") != NULL) {
+ 		g_set_error_literal (error,
+ 				     G_IO_ERROR,
+ 				     G_IO_ERROR_PERMISSION_DENIED,
+ 				     message);
+ 		return;
+ 	}
+ 	g_set_error_literal (error,
+ 			     G_IO_ERROR,
+ 			     G_IO_ERROR_NOT_SUPPORTED,
+ 			     message);
+ }
+ 
+ static gboolean
+ _helper_unregister (GError **error)
+ {
+ 	g_autoptr(GDBusProxy) proxy = NULL;
+ 	g_autoptr(GVariantBuilder) proxy_options = NULL;
+ 	g_autoptr(GVariant) res = NULL;
+ 
+ 	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+ 					       NULL,
+ 					       "com.redhat.RHSM1",
+ 					       "/com/redhat/RHSM1/Unregister",
+ 					       "com.redhat.RHSM1.Unregister",
+ 					       NULL, error);
+ 	if (proxy == NULL) {
+ 		g_prefix_error (error, "Failed to get proxy: ");
+ 		return FALSE;
+ 	}
+ 	proxy_options = g_variant_builder_new (G_VARIANT_TYPE_VARDICT);
+ 	res = g_dbus_proxy_call_sync (proxy,
+ 				      "Unregister",
+ 				      g_variant_new ("(a{sv}s)",
+ 						     proxy_options,
+ 						     locale),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      DBUS_TIMEOUT,
+ 				      NULL, error);
+ 	return res != NULL;
+ }
+ 
+ static gboolean
+ _helper_auto_attach (GError **error)
+ {
+ 	const gchar *str = NULL;
++	g_autoptr(GError) error_local = NULL;
+ 	g_autoptr(GDBusProxy) proxy = NULL;
+ 	g_autoptr(GVariantBuilder) proxy_options = NULL;
+ 	g_autoptr(GVariant) res = NULL;
+ 
+ 	g_debug ("auto-attaching subscriptions");
+ 	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+ 					       NULL,
+ 					       "com.redhat.RHSM1",
+ 					       "/com/redhat/RHSM1/Attach",
+ 					       "com.redhat.RHSM1.Attach",
+-					       NULL, error);
++					       NULL, &error_local);
+ 	if (proxy == NULL) {
+-		g_prefix_error (error, "Failed to get proxy: ");
++		g_dbus_error_strip_remote_error (error_local);
++		g_propagate_prefixed_error (error,
++					    g_steal_pointer (&error_local),
++					    "Failed to get proxy: ");
+ 		return FALSE;
+ 	}
+ 	proxy_options = g_variant_builder_new (G_VARIANT_TYPE_VARDICT);
+ 	res = g_dbus_proxy_call_sync (proxy,
+ 				      "AutoAttach",
+ 				      g_variant_new ("(sa{sv}s)",
+ 						     "", /* now? */
+ 						     proxy_options,
+ 						     locale),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      DBUS_TIMEOUT,
+-				      NULL, error);
+-	if (res == NULL)
+-		return FALSE;
++				      NULL, &error_local);
++	if (res == NULL) {
++		g_dbus_error_strip_remote_error (error_local);
++		_helper_convert_error (error_local->message, error);
++
++		if (*error != NULL) {
++			g_prefix_error (error, "Failed to get proxy: ");
++			return FALSE;
++		}
++
++		return TRUE;
++	}
+ 	g_variant_get (res, "(&s)", &str);
+ 	g_debug ("Attach.AutoAttach: %s", str);
+ 	return TRUE;
+ }
+ 
+ static gboolean
+ _helper_save_config (const gchar *key, const gchar *value, GError **error)
+ {
+ 	g_autoptr(GDBusProxy) proxy = NULL;
+ 	g_autoptr(GVariant) res = NULL;
+ 	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+ 					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+ 					       NULL,
+ 					       "com.redhat.RHSM1",
+ 					       "/com/redhat/RHSM1/Config",
+ 					       "com.redhat.RHSM1.Config",
+ 					       NULL, error);
+ 	if (proxy == NULL) {
+ 		g_prefix_error (error, "Failed to get proxy: ");
+ 		return FALSE;
+ 	}
+ 	res = g_dbus_proxy_call_sync (proxy, "Set",
+ 				      g_variant_new ("(svs)",
+ 						     key,
+ 						     g_variant_new_string (value),
+ 						     locale),
+ 				      G_DBUS_CALL_FLAGS_NONE,
+ 				      DBUS_TIMEOUT,
+ 				      NULL, error);
+@@ -298,105 +322,109 @@ main (int argc, char *argv[])
+ 			g_printerr ("Required --organisation\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 
+ 		g_input_stream_read (standard_input_stream, activation_key, sizeof (activation_key) - 1, NULL, &error_local);
+ 
+ 		if (error_local != NULL) {
+ 			g_printerr ("Could not read activation key: %s\n", error_local->message);
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 
+ 		g_debug ("trying to unregister in case machine is already registered");
+ 		_helper_unregister (NULL);
+ 
+ 		g_debug ("registering using activation key");
+ 		activation_keys = g_strsplit (activation_key, ",", -1);
+ 		res = g_dbus_proxy_call_sync (proxy,
+ 					      "RegisterWithActivationKeys",
+ 					      g_variant_new ("(s^asa{ss}a{ss}s)",
+ 							     organisation,
+ 							     activation_keys,
+ 							     subman_options,
+ 							     subman_conopts,
+ 							     locale),
+ 					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
+ 					      DBUS_TIMEOUT,
+ 					      NULL, &error_local);
+ 		if (res == NULL) {
+ 			g_dbus_error_strip_remote_error (error_local);
+ 			_helper_convert_error (error_local->message, &error);
+-			g_printerr ("Failed to RegisterWithActivationKeys: %s\n", error->message);
+-			return error->code;
++			if (error != NULL) {
++				g_printerr ("Failed to RegisterWithActivationKeys: %s\n", error->message);
++				return error->code;
++			}
+ 		}
+ 	} else if (g_strcmp0 (kind, "register-with-username") == 0) {
+ 		g_autoptr(GError) error_local = NULL;
+ 		g_autoptr(GVariant) res = NULL;
+ 		gchar password[PIPE_BUF + 1] = "";
+ 
+ 		if (username == NULL) {
+ 			g_printerr ("Required --username\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 		if (organisation == NULL) {
+ 			g_printerr ("Required --organisation\n");
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 
+ 		g_input_stream_read (standard_input_stream, password, sizeof (password) - 1, NULL, &error_local);
+ 
+ 		if (error_local != NULL) {
+ 			g_printerr ("Could not read password: %s\n", error_local->message);
+ 			return G_IO_ERROR_INVALID_DATA;
+ 		}
+ 
+ 		g_debug ("trying to unregister in case machine is already registered");
+ 		_helper_unregister (NULL);
+ 
+ 		g_debug ("registering using username and password");
+ 		res = g_dbus_proxy_call_sync (proxy,
+ 					      "Register",
+ 					      g_variant_new ("(sssa{ss}a{ss}s)",
+ 							     organisation,
+ 							     username,
+ 							     password,
+ 							     subman_options,
+ 							     subman_conopts,
+ 							     locale),
+ 					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
+ 					      DBUS_TIMEOUT,
+ 					      NULL, &error_local);
+ 		if (res == NULL) {
+ 			g_dbus_error_strip_remote_error (error_local);
+ 			_helper_convert_error (error_local->message, &error);
+-			g_printerr ("Failed to Register: %s\n", error->message);
+-			return error->code;
++			if (error != NULL) {
++				g_printerr ("Failed to Register: %s\n", error->message);
++				return error->code;
++			}
+ 		}
+ 	} else {
+ 		g_printerr ("Invalid --kind specified: %s\n", kind);
+ 		return G_IO_ERROR_INVALID_DATA;
+ 	}
+ 
+ 	/* set the new hostname */
+ 	if (!_helper_save_config ("server.hostname", hostname, &error)) {
+ 		g_printerr ("Failed to save hostname: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_INITIALIZED;
+ 	}
+ 	if (!_helper_save_config ("server.prefix", prefix, &error)) {
+ 		g_printerr ("Failed to save prefix: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_INITIALIZED;
+ 	}
+ 	if (!_helper_save_config ("server.port", port, &error)) {
+ 		g_printerr ("Failed to save port: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_INITIALIZED;
+ 	}
+ 
+ 	/* wait for rhsmd to notice the new config */
+ 	g_usleep (G_USEC_PER_SEC * 5);
+ 
+ 	/* auto-attach */
+ 	if (!_helper_auto_attach (&error)) {
+ 		g_printerr ("Failed to AutoAttach: %s\n", error->message);
+ 		return G_IO_ERROR_NOT_INITIALIZED;
+ 	}
+ 
+ 	return EXIT_SUCCESS;
+-- 
+2.30.0
+

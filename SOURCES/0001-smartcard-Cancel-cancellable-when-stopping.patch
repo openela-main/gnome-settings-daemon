@@ -1,0 +1,58 @@
+From a1c2685bc6b255f22b6ce4645c001d428cb67907 Mon Sep 17 00:00:00 2001
+From: Marek Kasik <mkasik@redhat.com>
+Date: Wed, 22 May 2019 14:56:42 +0200
+Subject: [PATCH] smartcard: Cancel cancellable when stopping
+
+self->cancellable in GsdSmartcardManager is not cancelled
+at gsd_smartcard_manager_stop() and hence some callbacks are
+still called after unload_nss() which clears SECMODListLock
+which is used by SECMOD_GetReadLock() / SECMOD_ReleaseReadLock().
+
+This leads to crashes in NSSRWLock_LockRead_Util() and
+NSSRWLock_UnlockRead_Util() probably.
+
+Also check for return value of g_cancellable_connect()
+and initialize pointer to PK11SlotInfo.
+
+See https://bugzilla.redhat.com/show_bug.cgi?id=1646359,
+https://bugzilla.redhat.com/show_bug.cgi?id=1688791 and
+their duplicates for additional info.
+---
+ plugins/smartcard/gsd-smartcard-manager.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletion(-)
+
+diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
+index 014c17be..da1e0d6d 100644
+--- a/plugins/smartcard/gsd-smartcard-manager.c
++++ b/plugins/smartcard/gsd-smartcard-manager.c
+@@ -184,7 +184,7 @@
+                              GError                   **error)
+ {
+         GsdSmartcardManagerPrivate *priv = self->priv;
+-        PK11SlotInfo *card, *old_card;
++        PK11SlotInfo *card = NULL, *old_card;
+         CK_SLOT_ID slot_id;
+         gulong handler_id;
+         int old_slot_series = -1, slot_series;
+@@ -190,7 +190,8 @@ watch_one_event_from_driver (GsdSmartcardManager       *self,
+                                             operation,
+                                             NULL);
+ 
+-        card = SECMOD_WaitForAnyTokenEvent (operation->driver, 0, PR_SecondsToInterval (1));
++        if (handler_id != 0)
++                card = SECMOD_WaitForAnyTokenEvent (operation->driver, 0, PR_SecondsToInterval (1));
+ 
+         g_cancellable_disconnect (cancellable, handler_id);
+ 
+@@ -773,6 +774,8 @@ gsd_smartcard_manager_stop (GsdSmartcardManager *self)
+ 
+         g_debug ("Stopping smartcard manager");
+ 
++        g_cancellable_cancel (priv->cancellable);
++
+         unload_nss (self);
+ 
+         g_clear_object (&priv->settings);
+-- 
+2.23.0
+

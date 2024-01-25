@@ -1,0 +1,56 @@
+From a78b25b9507edb958a46779f2bb808bf678fa4a7 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Sun, 24 Jan 2021 11:55:19 -0500
+Subject: [PATCH 14/15] subman: Drop "LAST" from status enum
+
+It's unused, so get rid of it.
+---
+ plugins/subman/gsd-subman-common.h | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/plugins/subman/gsd-subman-common.h b/plugins/subman/gsd-subman-common.h
+index f8a3d9f4..88226564 100644
+--- a/plugins/subman/gsd-subman-common.h
++++ b/plugins/subman/gsd-subman-common.h
+@@ -4,38 +4,37 @@
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2 of the License, or
+  * (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+  *
+  */
+ 
+ #ifndef __GSD_SUBMAN_COMMON_H
+ #define __GSD_SUBMAN_COMMON_H
+ 
+ #include <glib-object.h>
+ 
+ G_BEGIN_DECLS
+ 
+ typedef enum {
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN,
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID,
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID,
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED,
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID,
+ 	GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS,
+-	GSD_SUBMAN_SUBSCRIPTION_STATUS_LAST
+ } GsdSubmanSubscriptionStatus;
+ 
+ const gchar	*gsd_subman_subscription_status_to_string	(GsdSubmanSubscriptionStatus	 status);
+ 
+ G_END_DECLS
+ 
+ #endif /* __GSD_SUBMAN_COMMON_H */
+-- 
+2.30.0
+

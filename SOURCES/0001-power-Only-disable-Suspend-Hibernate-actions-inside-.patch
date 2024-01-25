@@ -1,0 +1,53 @@
+From fbe9b7dba44cb284f649a1e916b2cf3ce8281211 Mon Sep 17 00:00:00 2001
+From: Benjamin Berg <bberg@redhat.com>
+Date: Tue, 7 May 2019 15:40:20 +0200
+Subject: [PATCH] power: Only disable Suspend/Hibernate actions inside VM
+
+While we theoretically only want a different default value inside a VM,
+we currently hack this by never doing a suspend action inside VMs.
+However, that also breaks automatic logout, which is an unintended side
+effect.
+
+Move the check to not install the corresponding timeout (preventing
+sleep warnings from being displayed) and also only enforce the VM
+specific hack for the Suspend and Hibernate actions.
+---
+ plugins/power/gsd-power-manager.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index f965f6f..dbaa262 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1520,13 +1520,6 @@ idle_set_mode (GsdPowerManager *manager, GsdPowerIdleMode mode)
+                 return;
+         }
+ 
+-        /* don't do any power saving if we're a VM */
+-        if (manager->priv->is_virtual_machine) {
+-                g_debug ("ignoring state transition to %s as virtual machine",
+-                         idle_mode_to_string (mode));
+-                return;
+-        }
+-
+         manager->priv->current_idle_mode = mode;
+         g_debug ("Doing a state transition: %s", idle_mode_to_string (mode));
+ 
+@@ -1727,6 +1720,14 @@ idle_configure (GsdPowerManager *manager)
+         clear_idle_watch (manager->priv->idle_monitor,
+                           &manager->priv->idle_sleep_warning_id);
+ 
++        /* don't do any power saving if we're a VM */
++        if (manager->priv->is_virtual_machine &&
++            (action_type == GSD_POWER_ACTION_SUSPEND ||
++             action_type == GSD_POWER_ACTION_HIBERNATE)) {
++                g_debug ("Ignoring sleep timeout with suspend action inside VM");
++                timeout_sleep = 0;
++        }
++
+         if (timeout_sleep != 0) {
+                 g_debug ("setting up sleep callback %is", timeout_sleep);
+ 
+-- 
+2.31.1
+

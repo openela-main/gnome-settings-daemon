@@ -1,0 +1,25 @@
+From ff1278ecdebb5b23c80589a65f053d535a4d4f6a Mon Sep 17 00:00:00 2001
+From: Kalev Lember <klember@redhat.com>
+Date: Fri, 12 Feb 2021 14:51:29 +0100
+Subject: [PATCH 16/16] subman: Update POTFILES.in
+
+---
+ po/POTFILES.in | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/po/POTFILES.in b/po/POTFILES.in
+index 7f17d5b5..9b94dc0f 100644
+--- a/po/POTFILES.in
++++ b/po/POTFILES.in
+@@ -25,6 +25,8 @@ plugins/print-notifications/gsd-printer.c
+ plugins/print-notifications/gsd-print-notifications-manager.c
+ plugins/smartcard/gsd-smartcard-manager.c
+ plugins/smartcard/gsd-smartcard-service.c
++plugins/subman/gsd-subscription-manager.c
++plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in
+ plugins/wacom/gsd-wacom-manager.c
+ plugins/wacom/org.gnome.settings-daemon.plugins.wacom.policy.in.in
+ plugins/xsettings/gsd-xsettings-manager.c
+-- 
+2.29.2
+
