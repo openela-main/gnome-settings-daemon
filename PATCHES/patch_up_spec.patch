@@ -1,0 +1,49 @@
+diff --git a/SPECS/gnome-settings-daemon.spec b/SPECS/gnome-settings-daemon.spec
+index 327d12e..c99a2b9 100644
+--- a/SPECS/gnome-settings-daemon.spec
++++ b/SPECS/gnome-settings-daemon.spec
+@@ -9,6 +9,10 @@
+ 
+ %global tarball_version %%(echo %{version} | tr '~' '.')
+ 
++%if %{undefined openela}
++%bcond_without subman
++%endif
++
+ Name:           gnome-settings-daemon
+ Version:        40.0.1
+ Release:        11%{?dist}
+@@ -36,7 +40,9 @@ BuildRequires:  pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_sche
+ BuildRequires:  pkgconfig(gtk+-3.0) >= %{gtk3_version}
+ BuildRequires:  pkgconfig(gudev-1.0)
+ BuildRequires:  pkgconfig(gweather-3.0) >= %{libgweather_version}
++%if %{with subman}
+ BuildRequires:  pkgconfig(json-glib-1.0)
++%endif
+ BuildRequires:  pkgconfig(lcms2) >= 2.2
+ BuildRequires:  pkgconfig(libcanberra-gtk3)
+ BuildRequires:  pkgconfig(libgeoclue-2.0)
+@@ -68,7 +74,9 @@ Requires: gtk3%{?_isa} >= %{gtk3_version}
+ Requires: libgweather%{?_isa} >= %{libgweather_version}
+ 
+ Patch00001: 0001-power-Enable-power-saver-profile-when-low-on-battery.patch
++%if %{with subman}
+ Patch00002: subscription-manager-support.patch
++%endif
+ Patch00003: im-module-setting-fix.patch
+ Patch00004: print-notifications-clear-in-stop.patch
+ Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
+@@ -174,11 +182,13 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
+ %{_libexecdir}/gsd-wwan
+ %{_datadir}/glib-2.0/schemas/org.gnome.settings-daemon.plugins.wwan.gschema.xml
+ 
++%if %{with subman}
+ %{_sysconfdir}/xdg/autostart/org.gnome.SettingsDaemon.Subscription.desktop
+ %{_libexecdir}/gsd-subman
+ %{_libexecdir}/gsd-subman-helper
+ %{_datadir}/polkit-1/actions/org.gnome.settings-daemon.plugins.subman.policy
+ %{_datadir}/polkit-1/rules.d/org.gnome.settings-daemon.plugins.subman.rules
++%endif
+ 
+ %dir %{_libdir}/gnome-settings-daemon-40
+ %{_libdir}/gnome-settings-daemon-40/libgsd.so
