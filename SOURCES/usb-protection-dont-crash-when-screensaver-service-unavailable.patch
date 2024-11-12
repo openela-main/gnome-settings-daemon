@@ -1,0 +1,34 @@
+From 466f84d2483c1187a9e5503eebbd18cdf9c15b14 Mon Sep 17 00:00:00 2001
+From: Michael Catanzaro <mcatanzaro@redhat.com>
+Date: Fri, 17 Sep 2021 07:39:24 -0500
+Subject: [PATCH] usb-protection: don't crash when screensaver service is
+ unavailable
+
+gnome_settings_bus_get_screen_saver_proxy() can return NULL, e.g. when
+D-Bus is broken. We need to handle that case.
+
+Fixes #585
+---
+ plugins/usb-protection/gsd-usb-protection-manager.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/plugins/usb-protection/gsd-usb-protection-manager.c b/plugins/usb-protection/gsd-usb-protection-manager.c
+index 63a4e0d7..d8705316 100644
+--- a/plugins/usb-protection/gsd-usb-protection-manager.c
++++ b/plugins/usb-protection/gsd-usb-protection-manager.c
+@@ -951,6 +951,12 @@ usb_protection_proxy_ready (GObject      *source_object,
+                           G_CALLBACK (settings_changed_callback), manager);
+ 
+         manager->screensaver_proxy = gnome_settings_bus_get_screen_saver_proxy ();
++        if (!manager->screensaver_proxy) {
++                if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
++                        g_warning ("Failed to connect to screensaver service: %s", error->message);
++                g_clear_object (&manager->usb_protection);
++                return;
++        }
+ 
+         get_current_screen_saver_status (manager);
+ 
+-- 
+2.37.1
+

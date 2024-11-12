@@ -1,7 +1,7 @@
-From f73e1e8187570ddbc2fe40a78176689f12859123 Mon Sep 17 00:00:00 2001
+From 31123047c5e198f00c2e7ee35fe77d508100659a Mon Sep 17 00:00:00 2001
 From: Richard Hughes <rhughes@redhat.com>
 Date: Thu, 20 Aug 2020 11:16:09 -0400
-Subject: [PATCH 01/20] subman: Add a new plugin to provide system subscription
+Subject: [PATCH 01/21] subman: Add a new plugin to provide system subscription
  registration
 
 ---
@@ -10,7 +10,7 @@ Subject: [PATCH 01/20] subman: Add a new plugin to provide system subscription
  plugins/subman/README.md                      |  56 +
  plugins/subman/gsd-subman-common.c            |  36 +
  plugins/subman/gsd-subman-common.h            |  40 +
- plugins/subman/gsd-subman-helper.c            | 372 +++++++
+ plugins/subman/gsd-subman-helper.c            | 371 +++++++
  plugins/subman/gsd-subscription-manager.c     | 982 ++++++++++++++++++
  plugins/subman/gsd-subscription-manager.h     |  63 ++
  plugins/subman/main.c                         |   8 +
@@ -18,7 +18,7 @@ Subject: [PATCH 01/20] subman: Add a new plugin to provide system subscription
  ...ome.SettingsDaemon.Subscription.desktop.in |   9 +
  ...ettings-daemon.plugins.subman.policy.in.in |  27 +
  ...gnome.settings-daemon.plugins.subman.rules |   7 +
- 13 files changed, 1658 insertions(+)
+ 13 files changed, 1657 insertions(+)
  create mode 100644 plugins/subman/README.md
  create mode 100644 plugins/subman/gsd-subman-common.c
  create mode 100644 plugins/subman/gsd-subman-common.h
@@ -32,10 +32,10 @@ Subject: [PATCH 01/20] subman: Add a new plugin to provide system subscription
  create mode 100644 plugins/subman/org.gnome.settings-daemon.plugins.subman.rules
 
 diff --git a/meson.build b/meson.build
-index ba2a90ca..3cef1ae1 100644
+index 88e4f87d..644ba060 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -102,6 +102,7 @@ libcanberra_gtk_dep = dependency('libcanberra-gtk3')
+@@ -104,6 +104,7 @@ libcanberra_gtk_dep = dependency('libcanberra-gtk3')
  libgeoclue_dep = dependency('libgeoclue-2.0', version: '>= 2.3.1')
  libnotify_dep = dependency('libnotify', version: '>= 0.7.3')
  libpulse_mainloop_glib_dep = dependency('libpulse-mainloop-glib', version: '>= 2.0')
@@ -44,7 +44,7 @@ index ba2a90ca..3cef1ae1 100644
  polkit_gobject_dep = dependency('polkit-gobject-1', version: '>= 0.114')
  upower_glib_dep = dependency('upower-glib', version: '>= 0.99.8')
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 16397dc6..920b5cc9 100644
+index 5d5c6e9b..59266c8d 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -1,6 +1,7 @@
@@ -207,10 +207,10 @@ index 00000000..fccf9f6a
 +#endif /* __GSD_SUBMAN_COMMON_H */
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
 new file mode 100644
-index 00000000..69ebec7e
+index 00000000..b1ea48a3
 --- /dev/null
 +++ b/plugins/subman/gsd-subman-helper.c
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,371 @@
 +/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
 + *
 + * Copyright (C) 2019 Richard Hughes <rhughes@redhat.com>
@@ -582,7 +582,6 @@ index 00000000..69ebec7e
 +
 +	return EXIT_SUCCESS;
 +}
-+
 diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
 new file mode 100644
 index 00000000..08b13fa6
@@ -1778,13 +1777,13 @@ index 00000000..1ed3a0ea
 +    }
 +});
 -- 
-2.37.0
+2.43.0
 
 
-From d85f9992ac4b413d07092363568213991f38d898 Mon Sep 17 00:00:00 2001
+From 401046df68e152ffd6bd0ec56bbc4361eb351b55 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Thu, 27 Jun 2019 16:12:00 +0200
-Subject: [PATCH 02/20] subman: Add InstalledProducts dbus property for g-c-c
+Subject: [PATCH 02/21] subman: Add InstalledProducts dbus property for g-c-c
 
 ---
  plugins/subman/gsd-subscription-manager.c | 135 ++++++++++++++++++++++
@@ -2028,13 +2027,13 @@ index 08b13fa6..a8c18a26 100644
  		     "Failed to get property: %s", property_name);
  	return NULL;
 -- 
-2.37.0
+2.43.0
 
 
-From 65750e137dc591d34c1166de28ce2f73eb17d51e Mon Sep 17 00:00:00 2001
+From 3c367361c1b5f695a3070ce8c6344b633da7fac5 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Fri, 28 Jun 2019 18:10:36 +0200
-Subject: [PATCH 03/20] subman: Increase RHSM dbus call timeouts
+Subject: [PATCH 03/21] subman: Increase RHSM dbus call timeouts
 
 Increase the dbus timeouts to 5 minutes as the register/unregister calls
 seem to routinely take more than a minute.
@@ -2043,7 +2042,7 @@ seem to routinely take more than a minute.
  1 file changed, 12 insertions(+), 5 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index 69ebec7e..a649ae03 100644
+index b1ea48a3..2218abed 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -28,6 +28,8 @@
@@ -2106,13 +2105,13 @@ index 69ebec7e..a649ae03 100644
  			g_dbus_error_strip_remote_error (error_local);
  			_helper_convert_error (error_local->message, &error);
 -- 
-2.37.0
+2.43.0
 
 
-From cbbaf0ac6b826e38c38eba401e4afc5f71708389 Mon Sep 17 00:00:00 2001
+From 5f57d9fff5dce2b06967cc5a1cd3328c072aa29d Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Thu, 20 Aug 2020 11:20:47 -0400
-Subject: [PATCH 04/20] subman: Drop userlang field
+Subject: [PATCH 04/21] subman: Drop userlang field
 
 It's currently always erroneously set to empty string.
 
@@ -2197,13 +2196,13 @@ index a8c18a26..46f051a5 100644
  		return FALSE;
  	if (!_client_subscription_status_update (manager, error))
 -- 
-2.37.0
+2.43.0
 
 
-From be0e7fdd2e19a1322e0c69081b8a2bf8d62d743a Mon Sep 17 00:00:00 2001
+From 91ffe536f3117483c49b33f2277ab4a0683c556b Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 15:04:17 -0500
-Subject: [PATCH 05/20] subman: Use user locale for registration/subscription
+Subject: [PATCH 05/21] subman: Use user locale for registration/subscription
  operations
 
 This makes sure that error messages are in the correct locale.
@@ -2212,7 +2211,7 @@ This makes sure that error messages are in the correct locale.
  1 file changed, 11 insertions(+), 6 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index a649ae03..3c892c33 100644
+index 2218abed..5eadd20e 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -24,11 +24,13 @@
@@ -2294,13 +2293,13 @@ index a649ae03..3c892c33 100644
  					      DBUS_TIMEOUT,
  					      NULL, &error_local);
 -- 
-2.37.0
+2.43.0
 
 
-From a45af9d440fc55c1df3e4f12d15129d50d89f792 Mon Sep 17 00:00:00 2001
+From e7dc41a1f82d3ec6daea40b01ff9e38a71748d96 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Thu, 20 Aug 2020 13:34:19 -0400
-Subject: [PATCH 06/20] subman: Handle subscription-manager giving invalid
+Subject: [PATCH 06/21] subman: Handle subscription-manager giving invalid
  status better
 
 subscription-manager potentially returns status messages that the
@@ -2423,13 +2422,13 @@ index 46f051a5..e2c16056 100644
  	/* emit notification for g-c-c */
  	if (priv->subscription_status != priv->subscription_status_last) {
 -- 
-2.37.0
+2.43.0
 
 
-From 609e78ba17ee5610b35dd40f9763ca91306c3535 Mon Sep 17 00:00:00 2001
+From 0bbb5038a22c10d1187e063a4fd02dfdfe149497 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 25 Aug 2020 10:34:03 -0400
-Subject: [PATCH 07/20] subman: Force re-subscribe if the admin already
+Subject: [PATCH 07/21] subman: Force re-subscribe if the admin already
  subscribed
 
 It's possible for an admin to to half-enroll the system with RHN,
@@ -2451,7 +2450,7 @@ before registering.
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index 3c892c33..c248dbc3 100644
+index 5eadd20e..bdcf42c4 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -78,7 +78,6 @@ _helper_unregister (GError **error)
@@ -2501,13 +2500,13 @@ index 3c892c33..c248dbc3 100644
  					      "Register",
  					      g_variant_new ("(sssa{ss}a{ss}s)",
 -- 
-2.37.0
+2.43.0
 
 
-From c189fe1089c1f1975352b1a7fbe41f31ad3adc3b Mon Sep 17 00:00:00 2001
+From ad7c4f5953a2954ea62790d906fd699da55cc965 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 25 Aug 2020 16:20:42 -0400
-Subject: [PATCH 08/20] subman: Don't send secrets through command line
+Subject: [PATCH 08/21] subman: Don't send secrets through command line
 
 The command line is introspectable with "ps", and it even gets logged
 to syslog, so it's not suitable for passing secrets.
@@ -2523,7 +2522,7 @@ stdin, instead.
  3 files changed, 66 insertions(+), 20 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index c248dbc3..03d2cd64 100644
+index bdcf42c4..66cf5415 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -21,12 +21,14 @@
@@ -2751,13 +2750,13 @@ index bfd073b6..e4b4589d 100644
    install_rpath: gsd_pkglibdir,
    install_dir: gsd_libexecdir
 -- 
-2.37.0
+2.43.0
 
 
-From 3398c5037f9bdf2f6d3d2161146a6edea6c144f2 Mon Sep 17 00:00:00 2001
+From 2b10a7ed9209ef9b542c014eba2688363e6c8483 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Thu, 21 Jan 2021 09:52:19 -0500
-Subject: [PATCH 09/20] subman: Don't treat failure to attach as fatal
+Subject: [PATCH 09/21] subman: Don't treat failure to attach as fatal
 
 Many organizations don't require specific subscriptions to get
 updates (called "simple content access").  At the moment,
@@ -2769,7 +2768,7 @@ This commit quiets the error.
  1 file changed, 37 insertions(+), 9 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index 03d2cd64..ddfe389f 100644
+index 66cf5415..2152c521 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -52,6 +52,17 @@ _helper_convert_error (const gchar *json_txt, GError **error)
@@ -2862,13 +2861,13 @@ index 03d2cd64..ddfe389f 100644
  	} else {
  		g_printerr ("Invalid --kind specified: %s\n", kind);
 -- 
-2.37.0
+2.43.0
 
 
-From ae88d09fd12a971d5f60c5eee5d3b7710e4884be Mon Sep 17 00:00:00 2001
+From 087bfa30f5aae0233c181076d995bf06e4d10e3f Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:24:36 -0500
-Subject: [PATCH 10/20] subman: Add new no-installed-products state
+Subject: [PATCH 10/21] subman: Add new no-installed-products state
 
 It's possible, though unlikley, the system has
 no packages installed from Red Hat supported package sets.
@@ -2961,13 +2960,13 @@ index 0838d490..46f8d35c 100644
  		return FALSE;
  
 -- 
-2.37.0
+2.43.0
 
 
-From 18e5e5862aba2031d1a93671ad8156dcc7709eaf Mon Sep 17 00:00:00 2001
+From 704908573d589bd90b9d5c705c97dfff52db0a7f Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:26:40 -0500
-Subject: [PATCH 11/20] subman: Fix some build warnings
+Subject: [PATCH 11/21] subman: Fix some build warnings
 
 ---
  plugins/subman/gsd-subscription-manager.c | 8 ++++----
@@ -3000,13 +2999,13 @@ index 46f8d35c..1f9ca447 100644
  
  	/* FIXME: also do on error? */
 -- 
-2.37.0
+2.43.0
 
 
-From f3f5369b1d68f002b020f803fb59cdcb3205e6dc Mon Sep 17 00:00:00 2001
+From 4e08f49339698425f1c34bd82f484512cdc04f1e Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:27:42 -0500
-Subject: [PATCH 12/20] subman: Add DBus API to subscribe for updates on
+Subject: [PATCH 12/21] subman: Add DBus API to subscribe for updates on
  already registered system
 
 It's possible an admin may have registered their system without
@@ -3098,13 +3097,13 @@ index 1f9ca447..705f8b11 100644
  		g_assert_not_reached ();
  	}
 -- 
-2.37.0
+2.43.0
 
 
-From d00d1c34921d6301579ee29a51be89ce8250e83d Mon Sep 17 00:00:00 2001
+From 7a98b24d40ba6a963043ed0d74f65e88937c6c55 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:34:03 -0500
-Subject: [PATCH 13/20] subman: Improve subscription status handling
+Subject: [PATCH 13/21] subman: Improve subscription status handling
 
 This commit improves how subscription-manager status is
 parsed to give more detailed information about subscription
@@ -3177,13 +3176,13 @@ index 705f8b11..6d80bfa9 100644
  	if (priv->subscription_status != priv->subscription_status_last) {
  		_emit_property_changed (manager, "SubscriptionStatus",
 -- 
-2.37.0
+2.43.0
 
 
-From a3d4e534a1dfa6a6ff68d0bede69e063ffeeb4d7 Mon Sep 17 00:00:00 2001
+From e725a1d6a6f8b67cee1cbee6215ffb3ec956c6d5 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:55:19 -0500
-Subject: [PATCH 14/20] subman: Drop "LAST" from status enum
+Subject: [PATCH 14/21] subman: Drop "LAST" from status enum
 
 It's unused, so get rid of it.
 ---
@@ -3203,13 +3202,13 @@ index f8a3d9f4..88226564 100644
  
  const gchar	*gsd_subman_subscription_status_to_string	(GsdSubmanSubscriptionStatus	 status);
 -- 
-2.37.0
+2.43.0
 
 
-From 78859ea58014ee740de0c484308b6dedf4c59ab3 Mon Sep 17 00:00:00 2001
+From 2da1ab550a752aa431195103411d6f0b7ad4788a Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 12:41:20 -0500
-Subject: [PATCH 15/20] subman: Clean up notification behavior
+Subject: [PATCH 15/21] subman: Clean up notification behavior
 
 Notifications were only displayed for some status transitions.
 
@@ -3427,13 +3426,13 @@ index 6d80bfa9..aaccbbc6 100644
  	/* expired */
  	priv->notification_expired =
 -- 
-2.37.0
+2.43.0
 
 
-From f9a405172b08607777b47c03dbd1034227690fce Mon Sep 17 00:00:00 2001
+From 98e2e95f43603f056d020f40b2bf461dcafba3a1 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Fri, 12 Feb 2021 14:51:29 +0100
-Subject: [PATCH 16/20] subman: Update POTFILES.in
+Subject: [PATCH 16/21] subman: Update POTFILES.in
 
 ---
  po/POTFILES.in | 2 ++
@@ -3453,13 +3452,13 @@ index e721f526..7d5b7e9d 100644
  plugins/wacom/gsd-wacom-manager.c
  plugins/wacom/org.gnome.settings-daemon.plugins.wacom.policy.in.in
 -- 
-2.37.0
+2.43.0
 
 
-From 957d7916a843140898f7a3ca2adeb826cd5e6a99 Mon Sep 17 00:00:00 2001
+From 58e3919488aee5644516fe752b403630ebe03f80 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Mon, 6 Sep 2021 21:31:14 +0200
-Subject: [PATCH 17/20] subman: Don't force X11 backend
+Subject: [PATCH 17/21] subman: Don't force X11 backend
 
 All of this should work just fine with Wayland.
 ---
@@ -3479,13 +3478,13 @@ index 28ac995b..839c1b79 100644
  
  #include "daemon-skeleton-gtk.h"
 -- 
-2.37.0
+2.43.0
 
 
-From ea88e09c4e9cb2a6dc67740d556f52761297f5b6 Mon Sep 17 00:00:00 2001
+From 2cf1112676922085a4b791a0235efaa721e64c97 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Tue, 7 Sep 2021 13:08:12 +0200
-Subject: [PATCH 18/20] subman: Fix desktop file hint for notifications
+Subject: [PATCH 18/21] subman: Fix desktop file hint for notifications
 
 We don't have a separate subman-panel. It's all part of
 info-overview-panel, as of now at least.
@@ -3525,13 +3524,13 @@ index aaccbbc6..be978fc3 100644
  	notify_notification_set_urgency (priv->notification_registration_required, NOTIFY_URGENCY_CRITICAL);
  	notify_notification_add_action (priv->notification_registration_required,
 -- 
-2.37.0
+2.43.0
 
 
-From 3b21bc12315dba099d7377b55109bc5f942960f2 Mon Sep 17 00:00:00 2001
+From 7fd3fe588aac6e37364b7d93596c8ea21a8f4ab6 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Wed, 8 Sep 2021 13:25:07 +0200
-Subject: [PATCH 19/20] subman: Use preferences-system icon for notifications
+Subject: [PATCH 19/21] subman: Use preferences-system icon for notifications
 
 Use it as a placeholder until we get a new icon for subscription
 management.
@@ -3571,13 +3570,13 @@ index be978fc3..dbb81098 100644
  	notify_notification_set_hint_string (priv->notification_registration_required, "desktop-entry", "gnome-info-overview-panel");
  	notify_notification_set_hint_string (priv->notification_registration_required, "x-gnome-privacy-scope", "system");
 -- 
-2.37.0
+2.43.0
 
 
-From b7da34ad4cfb05a3d50495da65a7d76abacc965f Mon Sep 17 00:00:00 2001
+From 87b4ef3f411f4df4d59850681d80f0be0a43be1e Mon Sep 17 00:00:00 2001
 From: Felipe Borges <felipeborges@gnome.org>
 Date: Fri, 15 Jul 2022 15:25:14 +0200
-Subject: [PATCH 20/20] subman: Set "enable_content" option only for Register
+Subject: [PATCH 20/21] subman: Set "enable_content" option only for Register
 
 The "enable_content" option doesn't work for
 RegisterWithActivationKey.
@@ -3586,7 +3585,7 @@ RegisterWithActivationKey.
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
-index ddfe389f..bc56a8c2 100644
+index 2152c521..04b599a4 100644
 --- a/plugins/subman/gsd-subman-helper.c
 +++ b/plugins/subman/gsd-subman-helper.c
 @@ -299,8 +299,6 @@ main (int argc, char *argv[])
@@ -3602,11 +3601,204 @@ index ddfe389f..bc56a8c2 100644
  		g_autoptr(GVariant) res = NULL;
  		gchar password[PIPE_BUF + 1] = "";
  
-+ 	 	g_variant_builder_add (subman_options, "{ss}", "enable_content", "1");
++		g_variant_builder_add (subman_options, "{ss}", "enable_content", "1");
 +
  		if (username == NULL) {
  			g_printerr ("Required --username\n");
  			return G_IO_ERROR_INVALID_DATA;
 -- 
-2.37.0
+2.43.0
+
+
+From af1b217869f02788b3231530bf8368449180a5a7 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 4 Jan 2024 10:09:33 -0500
+Subject: [PATCH 21/21] subman: Make subscription-manager a soft dependency
+
+Some RHEL customers don't rely on subscription-manager for updates,
+but instead push updates via imaging. That is particularly important
+for "air gapped" installations that have no network access during
+normal operation.
+
+This commit makes the subman plugin more forgiving of situations where
+subscription-manager isn't installed.
+---
+ plugins/subman/gsd-subscription-manager.c | 118 ++++++++++++++++++----
+ 1 file changed, 96 insertions(+), 22 deletions(-)
+
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+index dbb81098..09a96a3a 100644
+--- a/plugins/subman/gsd-subscription-manager.c
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -271,8 +271,9 @@ _client_subscription_status_update (GsdSubscriptionManager *manager, GError **er
+ 	/* save old value */
+ 	priv->subscription_status_last = priv->subscription_status;
+ 
+-	if (!_client_installed_products_update (manager, error))
+-		goto out;
++	if (!_client_installed_products_update (manager, error)) {
++		return FALSE;
++	}
+ 
+ 	if (priv->installed_products->len == 0) {
+ 		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS;
+@@ -939,40 +940,109 @@ _rhsm_interface_to_string (_RhsmInterface kind)
+ 	return NULL;
+ }
+ 
++static void
++finish_loading (GsdSubscriptionManager *manager)
++{
++	g_autoptr (GError) error = NULL;
++
++	if (!_client_update_config (manager, &error)) {
++		g_debug ("Could not read subscription manager config: %s",
++			 error->message);
++		return;
++	}
++
++	if (!_client_subscription_status_update (manager, &error)) {
++		g_debug ("Could not read subscription manager status: %s",
++			 error->message);
++		return;
++	}
++
++	if (!_client_syspurpose_update (manager, &error)) {
++		g_debug ("Could not read system purpose from subscription manager: %s",
++			 error->message);
++		return;
++	}
++
++	_client_maybe__show_notification (manager);
++}
++
++static void
++on_subscription_manager_available (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = manager->priv;
++	g_autofree char *name_owner = NULL;
++
++	name_owner = g_dbus_proxy_get_name_owner (priv->proxies[0]);
++
++	if (name_owner == NULL) {
++		notify_notification_close (priv->notification_registered, NULL);
++		notify_notification_close (priv->notification_registration_required, NULL);
++		notify_notification_close (priv->notification_expired, NULL);
++		return;
++	}
++
++	finish_loading (manager);
++}
++
+ static gboolean
+-_client_load (GsdSubscriptionManager *manager, GError **error)
++start_loading (GsdSubscriptionManager *manager, GError **error)
+ {
+ 	GsdSubscriptionManagerPrivate *priv = manager->priv;
++	g_autoptr(GDBusConnection) connection = NULL;
++	g_autofree char *name_owner = NULL;
+ 
+ 	priv->config = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+ 
++	connection = g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, error);
++
++	if (connection == NULL) {
++		return FALSE;
++	}
++
++	g_dbus_connection_call (connection,
++			        "org.freedesktop.DBus",
++			        "/org/freedesktop/DBus",
++			        "org.freedesktop.DBus",
++			        "StartServiceByName",
++			        g_variant_new("(su)", "com.redhat.RHSM1", 0),
++			        NULL,
++			        G_DBUS_CALL_FLAGS_NONE,
++			        -1,
++			        NULL,
++			        NULL,
++			        NULL);
++
+ 	/* connect to all the interfaces on the *different* objects :| */
+ 	for (guint i = 0; i < _RHSM_INTERFACE_LAST; i++) {
+ 		const gchar *kind = _rhsm_interface_to_string (i);
+ 		g_autofree gchar *opath = g_strdup_printf ("/com/redhat/RHSM1/%s", kind);
+ 		g_autofree gchar *iface = g_strdup_printf ("com.redhat.RHSM1.%s", kind);
+ 		priv->proxies[i] =
+-			g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+-						       G_DBUS_PROXY_FLAGS_NONE,
+-						       NULL,
+-						       "com.redhat.RHSM1",
+-						       opath, iface,
+-						       NULL,
+-						       error);
++			g_dbus_proxy_new_sync (connection,
++						G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START_AT_CONSTRUCTION,
++						NULL,
++						"com.redhat.RHSM1",
++						opath, iface,
++						NULL,
++						error);
+ 		if (priv->proxies[i] == NULL)
+ 			return FALSE;
+ 		/* we want to get notified if the status of the system changes */
+ 		g_signal_connect (priv->proxies[i], "g-signal",
+ 				  G_CALLBACK (_subman_proxy_signal_cb), manager);
++
+ 	}
+ 
+-	/* get initial status */
+-	if (!_client_update_config (manager, error))
+-		return FALSE;
+-	if (!_client_subscription_status_update (manager, error))
+-		return FALSE;
+-	if (!_client_syspurpose_update (manager, error))
+-		return FALSE;
++	g_signal_connect_object (G_OBJECT (priv->proxies[0]),
++				 "notify::g-name-owner",
++				 G_CALLBACK (on_subscription_manager_available),
++				 manager,
++				 G_CONNECT_SWAPPED);
++
++	name_owner = g_dbus_proxy_get_name_owner (priv->proxies[0]);
++	if (name_owner != NULL) {
++		finish_loading (manager);
++	}
+ 
+ 	/* success */
+ 	return TRUE;
+@@ -981,13 +1051,16 @@ _client_load (GsdSubscriptionManager *manager, GError **error)
+ gboolean
+ gsd_subscription_manager_start (GsdSubscriptionManager *manager, GError **error)
+ {
+-	gboolean ret;
++	g_autoptr (GError) local_error = NULL;
++
+ 	g_debug ("Starting subscription manager");
+ 	gnome_settings_profile_start (NULL);
+-	ret = _client_load (manager, error);
+-	_client_maybe__show_notification (manager);
++	if (!start_loading (manager, &local_error)) {
++		g_debug ("Could not start subscription manager: %s",
++			 local_error->message);
++	}
+ 	gnome_settings_profile_end (NULL);
+-	return ret;
++	return TRUE;
+ }
+ 
+ void
+@@ -1222,8 +1295,9 @@ handle_get_property (GDBusConnection *connection,
+ 		return NULL;
+ 	}
+ 
+-	if (g_strcmp0 (property_name, "SubscriptionStatus") == 0)
++	if (g_strcmp0 (property_name, "SubscriptionStatus") == 0) {
+ 		return g_variant_new_uint32 (priv->subscription_status);
++	}
+ 
+ 	if (g_strcmp0 (property_name, "InstalledProducts") == 0)
+ 		return _make_installed_products_variant (priv->installed_products);
+-- 
+2.43.0
 

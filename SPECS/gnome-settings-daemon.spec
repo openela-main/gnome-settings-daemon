@@ -15,7 +15,7 @@
 
 Name: gnome-settings-daemon
 Version: 40.0.1
-Release: 11%{?dist}.openela.0.1
+Release: 17%{?dist}.openela.0.1
 Summary: The daemon sharing settings from GNOME to GTK+/KDE applications
 
 License: GPLv2+
@@ -80,6 +80,7 @@ Patch00002: subscription-manager-support.patch
 Patch00003: im-module-setting-fix.patch
 Patch00004: print-notifications-clear-in-stop.patch
 Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
+Patch00006: usb-protection-dont-crash-when-screensaver-service-unavailable.patch
 
 %description
 A daemon to share settings from GNOME to other applications. It also
@@ -207,8 +208,33 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
 %{_libdir}/pkgconfig/gnome-settings-daemon.pc
 
 %changelog
-* Thu Jan 25 2024 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
+* Tue Nov 12 2024 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
 - Remove all subman patches
+
+* Mon Mar 25 2024 Felipe Borges <feborges@redhat.com> - 40.0.1-17
+- Fix usb-protection crash when when screensaver service is unavailable
+  Related: RHEL-19295
+
+* Thu Jan 18 2024 Ray Strode <rstrode@redhat.com> - 40.0.1-16
+- Try to start rhsm if it's not already running
+  Related: RHEL-20449
+
+* Tue Jan 09 2024 Ray Strode <rstrode@redhat.com> - 40.0.1-15
+- Fix crashers in g-s-d and control-center related to
+  making subscription-manager a soft dep
+  Related: RHEL-20449
+
+* Thu Jan 04 2024 Ray Strode <rstrode@redhat.com> - 40.0.1-14
+- Make subman plugin sit dormant until subscription-manager is running
+  Related: RHEL-20449
+
+* Fri Jun 16 2023 Ray Strode <rstrode@redhat.com> - 40.0.1-13
+- Revert hard dependency on subscription-manager since we're going to put it in gnome-session instead
+  Related: #2175675
+
+* Thu May 04 2023 Ray Strode <rstrode@redhat.com> - 40.0.1-12
+- Add hard dependency on subscription-manager
+  Resolves: #2175675
 
 * Tue Mar 28 2023 Felipe Borges <feborges@redhat.com> - 40.0.1-11
 - Revert "power-button-action" always poweroff on Server chassis
