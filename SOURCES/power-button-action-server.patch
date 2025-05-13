@@ -1,0 +1,52 @@
+From 176f90307152e21e232a69c9ad06a31d30ba9c9a Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Mon, 20 Jan 2025 15:29:42 +0100
+Subject: [PATCH] Change the power-button-action behavior for Server with GUI
+
+When systemd-hostnamed chassis-type is "server" we read the
+power-button-action-server side setting instead.
+
+Related: RHEL-71937
+---
+ data/org.gnome.settings-daemon.plugins.power.gschema.xml.in | 5 +++++
+ plugins/media-keys/gsd-media-keys-manager.c                 | 4 +++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in b/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
+index e1a8787b..5a83666f 100644
+--- a/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
++++ b/data/org.gnome.settings-daemon.plugins.power.gschema.xml.in
+@@ -41,6 +41,11 @@
+       <summary>Power button action</summary>
+       <description>The action to take when the system power button is pressed. Virtual machines only honor the 'nothing' action, and will shutdown otherwise. Tablets always suspend, ignoring all the other action options.</description>
+     </key>
++    <key name="power-button-action-server" enum="org.gnome.settings-daemon.GsdPowerButtonActionType">
++      <default>'nothing'</default>
++      <summary>Power button action on servers</summary>
++      <description>The action to take when the system power button is pressed on "Server with GUI" environments.</description>
++    </key>
+     <key name="power-saver-profile-on-low-battery" type="b">
+       <default>true</default>
+       <summary>Enable power-saver profile when battery is low</summary>
+diff --git a/plugins/media-keys/gsd-media-keys-manager.c b/plugins/media-keys/gsd-media-keys-manager.c
+index 6ed8c323..631de0a3 100644
+--- a/plugins/media-keys/gsd-media-keys-manager.c
++++ b/plugins/media-keys/gsd-media-keys-manager.c
+@@ -2266,11 +2266,13 @@ do_config_power_button_action (GsdMediaKeysManager *manager,
+ 	GsdMediaKeysManagerPrivate *priv = GSD_MEDIA_KEYS_MANAGER_GET_PRIVATE (manager);
+         GsdPowerButtonActionType action_type;
+         GsdPowerActionType action;
++        gboolean is_server = FALSE;
+ 
+         if (priv->power_button_disabled)
+                 return;
+ 
+-        action_type = g_settings_get_enum (priv->power_settings, "power-button-action");
++        is_server = g_strcmp0 (priv->chassis_type, "server") == 0;
++        action_type = g_settings_get_enum (priv->power_settings, is_server? "power-button-action-server" : "power-button-action");
+         /* Always power off VMs, except when power-button-action is "nothing" */
+         if (g_strcmp0 (priv->chassis_type, "vm") == 0) {
+                 g_warning_once ("Virtual machines only honor the 'nothing' power-button-action, and will shutdown otherwise");
+-- 
+2.48.1
+

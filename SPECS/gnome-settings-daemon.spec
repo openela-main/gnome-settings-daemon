@@ -15,7 +15,7 @@
 
 Name: gnome-settings-daemon
 Version: 40.0.1
-Release: 17%{?dist}.openela.0.1
+Release: 19%{?dist}.openela.0.1
 Summary: The daemon sharing settings from GNOME to GTK+/KDE applications
 
 License: GPLv2+
@@ -81,6 +81,8 @@ Patch00003: im-module-setting-fix.patch
 Patch00004: print-notifications-clear-in-stop.patch
 Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
 Patch00006: usb-protection-dont-crash-when-screensaver-service-unavailable.patch
+Patch00007: smartcard-hotplug.patch
+Patch00008: power-button-action-server.patch
 
 %description
 A daemon to share settings from GNOME to other applications. It also
@@ -208,8 +210,16 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
 %{_libdir}/pkgconfig/gnome-settings-daemon.pc
 
 %changelog
-* Tue Nov 12 2024 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
+* Tue May 13 2025 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
 - Remove all subman patches
+
+* Mon Jan 20 2025 Felipe Borges <feborges@redhat.com> - 40.0.1-19
+- Fix default power-button-action setting for servers
+  Related: RHEL-71937
+
+* Tue Oct 29 2024 Felipe Borges <feborges@redhat.com> - 40.0.1-18
+- Fix smartcards only working when cold-plugged
+  Related: RHEL-47261
 
 * Mon Mar 25 2024 Felipe Borges <feborges@redhat.com> - 40.0.1-17
 - Fix usb-protection crash when when screensaver service is unavailable
