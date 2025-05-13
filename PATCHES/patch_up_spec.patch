@@ -1,5 +1,15 @@
+From 52ae4e6ccfec26a40d9953e573e1a75d4e6d014f Mon Sep 17 00:00:00 2001
+From: Alex Burmashev <alexander.burmashev@oracle.com>
+Date: Tue, 13 May 2025 10:34:40 +0000
+Subject: [PATCH] OpenELA 9.6 debranding
+
+Signed-off-by: Alex Burmashev <alexander.burmashev@oracle.com>
+---
+ SPECS/gnome-settings-daemon.spec | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
 diff --git a/SPECS/gnome-settings-daemon.spec b/SPECS/gnome-settings-daemon.spec
-index 2a320ad..e738a50 100644
+index abe67aa..7631c91 100644
 --- a/SPECS/gnome-settings-daemon.spec
 +++ b/SPECS/gnome-settings-daemon.spec
 @@ -9,6 +9,10 @@
@@ -12,7 +22,7 @@ index 2a320ad..e738a50 100644
 +
  Name:           gnome-settings-daemon
  Version:        40.0.1
- Release:        17%{?dist}
+ Release:        19%{?dist}
 @@ -36,7 +40,9 @@ BuildRequires:  pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_sche
  BuildRequires:  pkgconfig(gtk+-3.0) >= %{gtk3_version}
  BuildRequires:  pkgconfig(gudev-1.0)
@@ -33,7 +43,7 @@ index 2a320ad..e738a50 100644
  Patch00003: im-module-setting-fix.patch
  Patch00004: print-notifications-clear-in-stop.patch
  Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
-@@ -175,11 +183,13 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
+@@ -177,11 +185,13 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
  %{_libexecdir}/gsd-wwan
  %{_datadir}/glib-2.0/schemas/org.gnome.settings-daemon.plugins.wwan.gschema.xml
  
@@ -48,5 +58,5 @@ index 2a320ad..e738a50 100644
  %dir %{_libdir}/gnome-settings-daemon-40
  %{_libdir}/gnome-settings-daemon-40/libgsd.so
 -- 
-2.43.5
+2.47.1
 
