@@ -1,0 +1,2282 @@
+From 924bc2f68bccf362556700ce608aa9d002e61f66 Mon Sep 17 00:00:00 2001
+From: Felipe Borges <feborges@redhat.com>
+Date: Thu, 20 Aug 2020 11:16:09 -0400
+Subject: [PATCH] subman: Add subscription manager plugin
+
+---
+ meson.build                                   |    6 +
+ meson_options.txt                             |    2 +
+ plugins/meson.build                           |    5 +
+ plugins/subman/README.md                      |   56 +
+ plugins/subman/gsd-subman-common.c            |   38 +
+ plugins/subman/gsd-subman-common.h            |   41 +
+ plugins/subman/gsd-subman-helper.c            |  424 +++++
+ plugins/subman/gsd-subscription-manager.c     | 1401 +++++++++++++++++
+ plugins/subman/gsd-subscription-manager.h     |   50 +
+ plugins/subman/main.c                         |    7 +
+ plugins/subman/meson.build                    |   56 +
+ ...ome.SettingsDaemon.Subscription.desktop.in |    9 +
+ ...ettings-daemon.plugins.subman.policy.in.in |   27 +
+ ...gnome.settings-daemon.plugins.subman.rules |    7 +
+ po/POTFILES.in                                |    2 +
+ 15 files changed, 2131 insertions(+)
+ create mode 100644 plugins/subman/README.md
+ create mode 100644 plugins/subman/gsd-subman-common.c
+ create mode 100644 plugins/subman/gsd-subman-common.h
+ create mode 100644 plugins/subman/gsd-subman-helper.c
+ create mode 100644 plugins/subman/gsd-subscription-manager.c
+ create mode 100644 plugins/subman/gsd-subscription-manager.h
+ create mode 100644 plugins/subman/main.c
+ create mode 100644 plugins/subman/meson.build
+ create mode 100644 plugins/subman/org.gnome.SettingsDaemon.Subscription.desktop.in
+ create mode 100644 plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in
+ create mode 100644 plugins/subman/org.gnome.settings-daemon.plugins.subman.rules
+
+diff --git a/meson.build b/meson.build
+index a1d58a62..3215fefc 100644
+--- a/meson.build
++++ b/meson.build
+@@ -249,6 +249,12 @@ if enable_colord
+   colord_dep = dependency('colord', version: '>= 1.4.5')
+ endif
+ 
++# subman
++enable_subman = get_option('subman')
++if enable_subman
++  jsonglib_dep = dependency('json-glib-1.0', version: '>= 1.1.1')
++endif
++
+ gnome = import('gnome')
+ i18n = import('i18n')
+ pkg = import('pkgconfig')
+diff --git a/meson_options.txt b/meson_options.txt
+index 5e2cccab..f22cc469 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -12,3 +12,5 @@ option('wayland', type: 'boolean', value: true, description: 'build with Wayland
+ option('wwan', type: 'boolean', value: true, description: 'build with WWAN support')
+ option('gcr3', type: 'boolean', value: false, description: 'build with gcr3, otherwise gcr4 is used')
+ option('colord', type: 'boolean', value: true, description: 'build with colord support')
++
++option('subman', type: 'boolean', value: true, description: 'build with Red Hat subscription manager support')
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 194306dc..fed63168 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -1,6 +1,7 @@
+ all_plugins = [
+     ['a11y-settings', 'A11ySettings', 'GNOME accessibility'],
+     ['color', 'Color', 'GNOME color management'],
++    ['subman', 'Subscription', 'GNOME subscription management'],
+     ['datetime', 'Datetime', 'GNOME date & time'],
+     ['power', 'Power', 'GNOME power management'],
+     ['housekeeping', 'Housekeeping', 'GNOME maintenance of expirable data'],
+@@ -52,6 +53,10 @@ if not enable_cups
+   disabled_plugins += ['print-notifications']
+ endif
+ 
++if not enable_subman
++  disabled_plugins += ['subman']
++endif
++
+ # Specify futher required units, 'before' or 'after' may be specified if ordering is needed
+ plugin_gate_units = {
+     'xsettings': [
+diff --git a/plugins/subman/README.md b/plugins/subman/README.md
+new file mode 100644
+index 00000000..3e1cc3cd
+--- /dev/null
++++ b/plugins/subman/README.md
+@@ -0,0 +1,56 @@
++GNOME Settings Daemon: Subscription Manager Plugin
++==================================================
++
++Testing:
++
++To add a test acccount on subscription.rhsm.stage.redhat.com, use Ethel:
++http://account-manager-stage.app.eng.rdu2.redhat.com/#view
++
++Register with a username and password
++-------------------------------------
++
++    gdbus call \
++     --session \
++     --dest org.gnome.SettingsDaemon.Subscription \
++     --object-path /org/gnome/SettingsDaemon/Subscription \
++     --method org.gnome.SettingsDaemon.Subscription.Register "{'kind':<'username'>,'hostname':<'subscription.rhsm.stage.redhat.com'>,'username':<'rhughes_test'>,'password':<'barbaz'>}"
++
++To register with a certificate
++------------------------------
++
++    gdbus call \
++     --session \
++     --dest org.gnome.SettingsDaemon.Subscription \
++     --object-path /org/gnome/SettingsDaemon/Subscription \
++     --method org.gnome.SettingsDaemon.Subscription.Register "{'kind':<'key'>,'hostname':<'subscription.rhsm.stage.redhat.com'>,'organisation':<'foo'>,'activation-key':<'barbaz'>}"
++
++To unregister
++-------------
++
++    gdbus call \
++     --session \
++     --dest org.gnome.SettingsDaemon.Subscription \
++     --object-path /org/gnome/SettingsDaemon/Subscription \
++     --method org.gnome.SettingsDaemon.Subscription.Unregister
++
++Debugging
++---------
++
++Get the UNIX socket using `Subscription.Register` then call something like:
++
++    sudo G_MESSAGES_DEBUG=all ./plugins/subman/gsd-subman-helper \
++     --address="unix:abstract=/var/run/dbus-ulGB1wfnbn,guid=71e6bf329d861ce366df7a1d5d036a5b" \
++     --kind="register-with-username" \
++     --username="rhughes_test" \
++     --password="barbaz" \
++     --hostname="subscription.rhsm.stage.redhat.com" \
++     --organisation=""
++
++You can all see some basic debugging running `rhsmd` in the foreground:
++
++    sudo /usr/libexec/rhsmd -d -k
++
++Known Limitations
++=================
++
++Proxy servers are not supported, nor are custom host ports or prefixes.
+diff --git a/plugins/subman/gsd-subman-common.c b/plugins/subman/gsd-subman-common.c
+new file mode 100644
+index 00000000..eef5175d
+--- /dev/null
++++ b/plugins/subman/gsd-subman-common.c
+@@ -0,0 +1,38 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2019 Richard Hughes <rhughes@redhat.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "gsd-subman-common.h"
++
++const gchar *
++gsd_subman_subscription_status_to_string (GsdSubmanSubscriptionStatus status)
++{
++	if (status == GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID)
++		return "valid";
++	if (status == GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID)
++		return "invalid";
++	if (status == GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED)
++		return "disabled";
++	if (status == GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID)
++		return "partially-valid";
++	if (status == GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS)
++		return "no-installed-products";
++	return "unknown";
++}
+diff --git a/plugins/subman/gsd-subman-common.h b/plugins/subman/gsd-subman-common.h
+new file mode 100644
+index 00000000..9397dbe4
+--- /dev/null
++++ b/plugins/subman/gsd-subman-common.h
+@@ -0,0 +1,41 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2019 Richard Hughes <rhughes@redhat.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef __GSD_SUBMAN_COMMON_H
++#define __GSD_SUBMAN_COMMON_H
++
++#include <glib-object.h>
++
++G_BEGIN_DECLS
++
++typedef enum {
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_NOT_READ = -1,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID,
++	GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS,
++} GsdSubmanSubscriptionStatus;
++
++const gchar	*gsd_subman_subscription_status_to_string	(GsdSubmanSubscriptionStatus	 status);
++
++G_END_DECLS
++
++#endif /* __GSD_SUBMAN_COMMON_H */
+diff --git a/plugins/subman/gsd-subman-helper.c b/plugins/subman/gsd-subman-helper.c
+new file mode 100644
+index 00000000..04b599a4
+--- /dev/null
++++ b/plugins/subman/gsd-subman-helper.c
+@@ -0,0 +1,424 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2019 Richard Hughes <rhughes@redhat.com>
++ *
++ * Licensed under the GNU General Public License Version 2
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#include "config.h"
++
++
++#include <sys/types.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <locale.h>
++
++#include <gio/gio.h>
++#include <gio/gunixinputstream.h>
++#include <json-glib/json-glib.h>
++
++#define DBUS_TIMEOUT 300000 /* 5 minutes */
++static const char *locale;
++
++static void
++_helper_convert_error (const gchar *json_txt, GError **error)
++{
++	JsonNode *json_root;
++	JsonObject *json_obj;
++	const gchar *message;
++	g_autoptr(JsonParser) json_parser = json_parser_new ();
++
++	/* this may be plain text or JSON :| */
++	if (!json_parser_load_from_data (json_parser, json_txt, -1, NULL)) {
++		g_set_error_literal (error,
++				     G_IO_ERROR,
++				     G_IO_ERROR_NOT_SUPPORTED,
++				     json_txt);
++		return;
++	}
++	json_root = json_parser_get_root (json_parser);
++	json_obj = json_node_get_object (json_root);
++	if (json_object_has_member (json_obj, "severity")) {
++		const gchar *severity;
++
++		/* warnings are non-fatal so we ignore them
++		 */
++		severity = json_object_get_string_member (json_obj, "severity");
++		if (g_strstr_len (severity, -1, "warning") != NULL) {
++			return;
++		}
++	}
++
++	if (!json_object_has_member (json_obj, "message")) {
++		g_set_error (error,
++			     G_IO_ERROR,
++			     G_IO_ERROR_INVALID_DATA,
++			     "no message' in %s", json_txt);
++		return;
++	}
++	message = json_object_get_string_member (json_obj, "message");
++	if (g_strstr_len (message, -1, "Invalid user credentials") != NULL) {
++		g_set_error_literal (error,
++				     G_IO_ERROR,
++				     G_IO_ERROR_PERMISSION_DENIED,
++				     message);
++		return;
++	}
++	g_set_error_literal (error,
++			     G_IO_ERROR,
++			     G_IO_ERROR_NOT_SUPPORTED,
++			     message);
++}
++
++static gboolean
++_helper_unregister (GError **error)
++{
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GVariantBuilder) proxy_options = NULL;
++	g_autoptr(GVariant) res = NULL;
++
++	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
++					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
++					       NULL,
++					       "com.redhat.RHSM1",
++					       "/com/redhat/RHSM1/Unregister",
++					       "com.redhat.RHSM1.Unregister",
++					       NULL, error);
++	if (proxy == NULL) {
++		g_prefix_error (error, "Failed to get proxy: ");
++		return FALSE;
++	}
++	proxy_options = g_variant_builder_new (G_VARIANT_TYPE_VARDICT);
++	res = g_dbus_proxy_call_sync (proxy,
++				      "Unregister",
++				      g_variant_new ("(a{sv}s)",
++						     proxy_options,
++						     locale),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      DBUS_TIMEOUT,
++				      NULL, error);
++	return res != NULL;
++}
++
++static gboolean
++_helper_auto_attach (GError **error)
++{
++	const gchar *str = NULL;
++	g_autoptr(GError) error_local = NULL;
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GVariantBuilder) proxy_options = NULL;
++	g_autoptr(GVariant) res = NULL;
++
++	g_debug ("auto-attaching subscriptions");
++	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
++					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
++					       NULL,
++					       "com.redhat.RHSM1",
++					       "/com/redhat/RHSM1/Attach",
++					       "com.redhat.RHSM1.Attach",
++					       NULL, &error_local);
++	if (proxy == NULL) {
++		g_dbus_error_strip_remote_error (error_local);
++		g_propagate_prefixed_error (error,
++					    g_steal_pointer (&error_local),
++					    "Failed to get proxy: ");
++		return FALSE;
++	}
++	proxy_options = g_variant_builder_new (G_VARIANT_TYPE_VARDICT);
++	res = g_dbus_proxy_call_sync (proxy,
++				      "AutoAttach",
++				      g_variant_new ("(sa{sv}s)",
++						     "", /* now? */
++						     proxy_options,
++						     locale),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      DBUS_TIMEOUT,
++				      NULL, &error_local);
++	if (res == NULL) {
++		g_dbus_error_strip_remote_error (error_local);
++		_helper_convert_error (error_local->message, error);
++
++		if (*error != NULL) {
++			g_prefix_error (error, "Failed to get proxy: ");
++			return FALSE;
++		}
++
++		return TRUE;
++	}
++	g_variant_get (res, "(&s)", &str);
++	g_debug ("Attach.AutoAttach: %s", str);
++	return TRUE;
++}
++
++static gboolean
++_helper_save_config (const gchar *key, const gchar *value, GError **error)
++{
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GVariant) res = NULL;
++	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++					       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
++					       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
++					       NULL,
++					       "com.redhat.RHSM1",
++					       "/com/redhat/RHSM1/Config",
++					       "com.redhat.RHSM1.Config",
++					       NULL, error);
++	if (proxy == NULL) {
++		g_prefix_error (error, "Failed to get proxy: ");
++		return FALSE;
++	}
++	res = g_dbus_proxy_call_sync (proxy, "Set",
++				      g_variant_new ("(svs)",
++						     key,
++						     g_variant_new_string (value),
++						     locale),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      DBUS_TIMEOUT,
++				      NULL, error);
++	return res != NULL;
++}
++
++int
++main (int argc, char *argv[])
++{
++	g_autofree gchar *activation_key = NULL;
++	g_autofree gchar *address = NULL;
++	g_autofree gchar *hostname = NULL;
++	g_autofree gchar *kind = NULL;
++	g_autofree gchar *organisation = NULL;
++	g_autofree gchar *port = NULL;
++	g_autofree gchar *prefix = NULL;
++	g_autofree gchar *proxy_server = NULL;
++	g_autofree gchar *username = NULL;
++	g_autoptr(GDBusConnection) conn_private = NULL;
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GError) error = NULL;
++	g_autoptr(GOptionContext) context = g_option_context_new (NULL);
++	g_autoptr(GVariantBuilder) proxy_options = NULL;
++	g_autoptr(GVariantBuilder) subman_conopts = NULL;
++	g_autoptr(GVariantBuilder) subman_options = NULL;
++	g_autoptr(GInputStream) standard_input_stream = g_unix_input_stream_new (STDIN_FILENO, FALSE);
++
++	const GOptionEntry options[] = {
++		{ "kind", '\0', G_OPTION_FLAG_NONE, G_OPTION_ARG_STRING,
++			&kind, "Kind, e.g. 'username' or 'key'", NULL },
++		{ "address", '\0', G_OPTION_FLAG_NONE, G_OPTION_ARG_STRING,
++			&address, "UNIX address", NULL },
++		{ "username", '\0', G_OPTION_FLAG_NONE, G_OPTION_ARG_STRING,
++			&username, "Username", NULL },
++		{ "organisation", '\0', G_OPTION_FLAG_NONE, G_OPTION_ARG_STRING,
++			&organisation, "Organisation", NULL },
++		{ "hostname", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
++			&hostname, "Registration server hostname", NULL },
++		{ "prefix", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
++			&prefix, "Registration server prefix", NULL },
++		{ "port", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
++			&port, "Registration server port", NULL },
++		{ "proxy", '\0', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,
++			&proxy_server, "Proxy settings", NULL },
++		{ NULL}
++	};
++
++	/* check calling UID */
++	if (getuid () != 0 || geteuid () != 0) {
++		g_printerr ("This program can only be used by the root user\n");
++		return G_IO_ERROR_NOT_SUPPORTED;
++	}
++
++	setlocale (LC_ALL, "");
++	locale = setlocale (LC_MESSAGES, NULL);
++
++	g_option_context_add_main_entries (context, options, NULL);
++	if (!g_option_context_parse (context, &argc, &argv, &error)) {
++		g_printerr ("Failed to parse arguments: %s\n", error->message);
++		return G_IO_ERROR_NOT_SUPPORTED;
++	}
++
++	/* uncommon actions */
++	if (kind == NULL) {
++		g_printerr ("No --kind specified\n");
++		return G_IO_ERROR_INVALID_DATA;
++	}
++	if (g_strcmp0 (kind, "unregister") == 0) {
++	        g_debug ("unregistering");
++		if (!_helper_unregister (&error)) {
++			g_printerr ("Failed to Unregister: %s\n", error->message);
++			return G_IO_ERROR_NOT_INITIALIZED;
++		}
++		return EXIT_SUCCESS;
++	}
++	if (g_strcmp0 (kind, "auto-attach") == 0) {
++		if (!_helper_auto_attach (&error)) {
++			g_printerr ("Failed to AutoAttach: %s\n", error->message);
++			return G_IO_ERROR_NOT_INITIALIZED;
++		}
++		return EXIT_SUCCESS;
++	}
++
++	/* connect to abstract socket for reasons */
++	if (address == NULL) {
++		g_printerr ("No --address specified\n");
++		return G_IO_ERROR_INVALID_DATA;
++	}
++	conn_private = g_dbus_connection_new_for_address_sync (address,
++							       G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT,
++							       NULL, NULL,
++							       &error);
++	if (conn_private == NULL) {
++		g_printerr ("Invalid --address specified: %s\n", error->message);
++		return G_IO_ERROR_INVALID_DATA;
++	}
++	proxy = g_dbus_proxy_new_sync (conn_private,
++				       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
++				       NULL, /* GDBusInterfaceInfo */
++				       NULL, /* name */
++				       "/com/redhat/RHSM1/Register",
++				       "com.redhat.RHSM1.Register",
++				       NULL, &error);
++	if (proxy == NULL) {
++		g_printerr ("Count not contact RHSM: %s\n", error->message);
++		return G_IO_ERROR_NOT_FOUND;
++	}
++
++	/* enable_content=1 auto attaches the subscription */
++	subman_options = g_variant_builder_new (G_VARIANT_TYPE("a{ss}"));
++
++	/* set registration server */
++	if (hostname == NULL || hostname[0] == '\0')
++		hostname = g_strdup ("subscription.rhsm.redhat.com");
++	if (prefix == NULL || prefix[0] == '\0')
++		prefix = g_strdup ("/subscription");
++	if (port == NULL || port[0] == '\0')
++		port = g_strdup ("443");
++	subman_conopts = g_variant_builder_new (G_VARIANT_TYPE("a{ss}"));
++	g_variant_builder_add (subman_conopts, "{ss}", "host", hostname);
++	g_variant_builder_add (subman_conopts, "{ss}", "handler", prefix);
++	g_variant_builder_add (subman_conopts, "{ss}", "port", port);
++
++	/* call into RHSM */
++	if (g_strcmp0 (kind, "register-with-key") == 0) {
++		g_auto(GStrv) activation_keys = NULL;
++		g_autoptr(GError) error_local = NULL;
++		g_autoptr(GVariant) res = NULL;
++		gchar activation_key[PIPE_BUF + 1] = "";
++
++		if (organisation == NULL) {
++			g_printerr ("Required --organisation\n");
++			return G_IO_ERROR_INVALID_DATA;
++		}
++
++		g_input_stream_read (standard_input_stream, activation_key, sizeof (activation_key) - 1, NULL, &error_local);
++
++		if (error_local != NULL) {
++			g_printerr ("Could not read activation key: %s\n", error_local->message);
++			return G_IO_ERROR_INVALID_DATA;
++		}
++
++		g_debug ("trying to unregister in case machine is already registered");
++		_helper_unregister (NULL);
++
++		g_debug ("registering using activation key");
++		activation_keys = g_strsplit (activation_key, ",", -1);
++		res = g_dbus_proxy_call_sync (proxy,
++					      "RegisterWithActivationKeys",
++					      g_variant_new ("(s^asa{ss}a{ss}s)",
++							     organisation,
++							     activation_keys,
++							     subman_options,
++							     subman_conopts,
++							     locale),
++					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
++					      DBUS_TIMEOUT,
++					      NULL, &error_local);
++		if (res == NULL) {
++			g_dbus_error_strip_remote_error (error_local);
++			_helper_convert_error (error_local->message, &error);
++			if (error != NULL) {
++				g_printerr ("Failed to RegisterWithActivationKeys: %s\n", error->message);
++				return error->code;
++			}
++		}
++	} else if (g_strcmp0 (kind, "register-with-username") == 0) {
++		g_autoptr(GError) error_local = NULL;
++		g_autoptr(GVariant) res = NULL;
++		gchar password[PIPE_BUF + 1] = "";
++
++		g_variant_builder_add (subman_options, "{ss}", "enable_content", "1");
++
++		if (username == NULL) {
++			g_printerr ("Required --username\n");
++			return G_IO_ERROR_INVALID_DATA;
++		}
++		if (organisation == NULL) {
++			g_printerr ("Required --organisation\n");
++			return G_IO_ERROR_INVALID_DATA;
++		}
++
++		g_input_stream_read (standard_input_stream, password, sizeof (password) - 1, NULL, &error_local);
++
++		if (error_local != NULL) {
++			g_printerr ("Could not read password: %s\n", error_local->message);
++			return G_IO_ERROR_INVALID_DATA;
++		}
++
++		g_debug ("trying to unregister in case machine is already registered");
++		_helper_unregister (NULL);
++
++		g_debug ("registering using username and password");
++		res = g_dbus_proxy_call_sync (proxy,
++					      "Register",
++					      g_variant_new ("(sssa{ss}a{ss}s)",
++							     organisation,
++							     username,
++							     password,
++							     subman_options,
++							     subman_conopts,
++							     locale),
++					      G_DBUS_CALL_FLAGS_NO_AUTO_START,
++					      DBUS_TIMEOUT,
++					      NULL, &error_local);
++		if (res == NULL) {
++			g_dbus_error_strip_remote_error (error_local);
++			_helper_convert_error (error_local->message, &error);
++			if (error != NULL) {
++				g_printerr ("Failed to Register: %s\n", error->message);
++				return error->code;
++			}
++		}
++	} else {
++		g_printerr ("Invalid --kind specified: %s\n", kind);
++		return G_IO_ERROR_INVALID_DATA;
++	}
++
++	/* set the new hostname */
++	if (!_helper_save_config ("server.hostname", hostname, &error)) {
++		g_printerr ("Failed to save hostname: %s\n", error->message);
++		return G_IO_ERROR_NOT_INITIALIZED;
++	}
++	if (!_helper_save_config ("server.prefix", prefix, &error)) {
++		g_printerr ("Failed to save prefix: %s\n", error->message);
++		return G_IO_ERROR_NOT_INITIALIZED;
++	}
++	if (!_helper_save_config ("server.port", port, &error)) {
++		g_printerr ("Failed to save port: %s\n", error->message);
++		return G_IO_ERROR_NOT_INITIALIZED;
++	}
++
++	return EXIT_SUCCESS;
++}
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+new file mode 100644
+index 00000000..eb45e367
+--- /dev/null
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -0,0 +1,1401 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2019 Richard Hughes <richard@hughsie.com>
++ * Copyright (C) 2019 Kalev Lember <klember@redhat.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include <glib/gi18n.h>
++#include <gio/gunixinputstream.h>
++#include <gdk/gdk.h>
++#include <gtk/gtk.h>
++#include <json-glib/json-glib.h>
++#include <libnotify/notify.h>
++
++#include "gnome-settings-profile.h"
++#include "gsd-subman-common.h"
++#include "gsd-subscription-manager.h"
++
++#define GSD_DBUS_NAME "org.gnome.SettingsDaemon"
++#define GSD_DBUS_PATH "/org/gnome/SettingsDaemon"
++#define GSD_DBUS_BASE_INTERFACE "org.gnome.SettingsDaemon"
++
++#define GSD_SUBSCRIPTION_DBUS_NAME		GSD_DBUS_NAME ".Subscription"
++#define GSD_SUBSCRIPTION_DBUS_PATH		GSD_DBUS_PATH "/Subscription"
++#define GSD_SUBSCRIPTION_DBUS_INTERFACE		GSD_DBUS_BASE_INTERFACE ".Subscription"
++
++static const gchar introspection_xml[] =
++"<node>"
++"  <interface name='org.gnome.SettingsDaemon.Subscription'>"
++"    <method name='Register'>"
++"      <arg type='a{sv}' name='options' direction='in'/>"
++"    </method>"
++"    <method name='Unregister'/>"
++"    <method name='Attach'/>"
++"    <property name='InstalledProducts' type='aa{sv}' access='read'/>"
++"    <property name='SubscriptionStatus' type='u' access='read'/>"
++"  </interface>"
++"</node>";
++
++#define GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE(o) (gsd_subscription_manager_get_instance_private (o))
++
++typedef enum {
++	_RHSM_INTERFACE_CONFIG,
++	_RHSM_INTERFACE_REGISTER_SERVER,
++	_RHSM_INTERFACE_ATTACH,
++	_RHSM_INTERFACE_ENTITLEMENT,
++	_RHSM_INTERFACE_PRODUCTS,
++	_RHSM_INTERFACE_CONSUMER,
++	_RHSM_INTERFACE_SYSPURPOSE,
++	_RHSM_INTERFACE_LAST
++} _RhsmInterface;
++
++typedef struct
++{
++	/* D-Bus */
++	guint		 name_id;
++	GDBusNodeInfo	*introspection_data;
++	GDBusConnection	*connection;
++	GCancellable	*bus_cancellable;
++
++	GDBusProxy	*proxies[_RHSM_INTERFACE_LAST];
++	GHashTable	*config; 	/* str:str */
++	GPtrArray	*installed_products;
++	gchar		*address;
++
++	GTimer		*timer_last_notified;
++	NotifyNotification	*notification_expired;
++	NotifyNotification	*notification_registered;
++	NotifyNotification	*notification_registration_required;
++	GsdSubmanSubscriptionStatus	 subscription_status;
++	GsdSubmanSubscriptionStatus	 subscription_status_last;
++} GsdSubscriptionManagerPrivate;
++
++enum {
++	PROP_0,
++};
++
++static void     gsd_subscription_manager_class_init  (GsdSubscriptionManagerClass *klass);
++static void     gsd_subscription_manager_init        (GsdSubscriptionManager      *subscription_manager);
++static void     gsd_subscription_manager_finalize    (GObject             *object);
++
++G_DEFINE_TYPE_WITH_PRIVATE (GsdSubscriptionManager, gsd_subscription_manager, G_TYPE_OBJECT)
++
++typedef struct
++{
++	gchar *product_name;
++	gchar *product_id;
++	gchar *version;
++	gchar *arch;
++	gchar *status;
++	gchar *starts;
++	gchar *ends;
++} ProductData;
++
++static void
++product_data_free (ProductData *product)
++{
++	g_free (product->product_name);
++	g_free (product->product_id);
++	g_free (product->version);
++	g_free (product->arch);
++	g_free (product->status);
++	g_free (product->starts);
++	g_free (product->ends);
++	g_free (product);
++}
++
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (ProductData, product_data_free);
++
++static gpointer manager_object = NULL;
++
++GQuark
++gsd_subscription_manager_error_quark (void)
++{
++	static GQuark quark = 0;
++	if (!quark)
++		quark = g_quark_from_static_string ("gsd_subscription_manager_error");
++	return quark;
++}
++
++static GVariant *
++_make_installed_products_variant (GPtrArray *installed_products)
++{
++	GVariantBuilder builder;
++	g_variant_builder_init (&builder, G_VARIANT_TYPE ("aa{sv}"));
++
++	for (guint i = 0; i < installed_products->len; i++) {
++		ProductData *product = g_ptr_array_index (installed_products, i);
++		g_auto(GVariantDict) dict;
++
++		g_variant_dict_init (&dict, NULL);
++
++		g_variant_dict_insert (&dict, "product-name", "s", product->product_name);
++		g_variant_dict_insert (&dict, "product-id", "s", product->product_id);
++		g_variant_dict_insert (&dict, "version", "s", product->version);
++		g_variant_dict_insert (&dict, "arch", "s", product->arch);
++		g_variant_dict_insert (&dict, "status", "s", product->status);
++		g_variant_dict_insert (&dict, "starts", "s", product->starts);
++		g_variant_dict_insert (&dict, "ends", "s", product->ends);
++
++		g_variant_builder_add_value (&builder, g_variant_dict_end (&dict));
++	}
++
++	return g_variant_builder_end (&builder);
++}
++
++static void
++_emit_property_changed (GsdSubscriptionManager *manager,
++		        const gchar *property_name,
++		        GVariant *property_value)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	GVariantBuilder builder;
++	GVariantBuilder invalidated_builder;
++
++	/* not yet connected */
++	if (priv->connection == NULL)
++		return;
++
++	/* build the dict */
++	g_variant_builder_init (&invalidated_builder, G_VARIANT_TYPE ("as"));
++	g_variant_builder_init (&builder, G_VARIANT_TYPE_ARRAY);
++	g_variant_builder_add (&builder,
++			       "{sv}",
++			       property_name,
++			       property_value);
++	g_dbus_connection_emit_signal (priv->connection,
++				       NULL,
++				       GSD_SUBSCRIPTION_DBUS_PATH,
++				       "org.freedesktop.DBus.Properties",
++				       "PropertiesChanged",
++				       g_variant_new ("(sa{sv}as)",
++				       GSD_SUBSCRIPTION_DBUS_INTERFACE,
++				       &builder,
++				       &invalidated_builder),
++				       NULL);
++	g_variant_builder_clear (&builder);
++	g_variant_builder_clear (&invalidated_builder);
++}
++
++static gboolean
++_client_installed_products_update (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	JsonNode *json_root;
++	JsonArray *json_products_array;
++	const gchar *json_txt = NULL;
++	g_autoptr(GVariant) val = NULL;
++	g_autoptr(JsonParser) json_parser = json_parser_new ();
++
++	val = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_PRODUCTS],
++				      "ListInstalledProducts",
++				      g_variant_new ("(sa{sv}s)",
++						     ""   /* filter_string */,
++						     NULL /* proxy_options */,
++						     "C.UTF-8"),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      -1, NULL, error);
++	if (val == NULL)
++		return FALSE;
++	g_variant_get (val, "(&s)", &json_txt);
++	g_debug ("Products.ListInstalledProducts JSON: %s", json_txt);
++	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
++		return FALSE;
++	json_root = json_parser_get_root (json_parser);
++	json_products_array = json_node_get_array (json_root);
++	if (json_products_array == NULL) {
++		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++			     "no InstalledProducts array in %s", json_txt);
++		return FALSE;
++	}
++
++	g_ptr_array_set_size (priv->installed_products, 0);
++
++	for (guint i = 0; i < json_array_get_length (json_products_array); i++) {
++		JsonArray *json_product = json_array_get_array_element (json_products_array, i);
++		g_autoptr(ProductData) product = g_new0 (ProductData, 1);
++
++		if (json_product == NULL)
++			continue;
++		if (json_array_get_length (json_product) < 8) {
++			g_debug ("Unexpected number of array elements in InstalledProducts JSON");
++			continue;
++		}
++
++		product->product_name = g_strdup (json_array_get_string_element (json_product, 0));
++		product->product_id = g_strdup (json_array_get_string_element (json_product, 1));
++		product->version = g_strdup (json_array_get_string_element (json_product, 2));
++		product->arch = g_strdup (json_array_get_string_element (json_product, 3));
++		product->status = g_strdup (json_array_get_string_element (json_product, 4));
++		product->starts = g_strdup (json_array_get_string_element (json_product, 6));
++		product->ends = g_strdup (json_array_get_string_element (json_product, 7));
++
++		g_ptr_array_add (priv->installed_products, g_steal_pointer (&product));
++	}
++
++	/* emit notification for g-c-c */
++	_emit_property_changed (manager, "InstalledProducts",
++			       _make_installed_products_variant (priv->installed_products));
++
++	return TRUE;
++}
++
++static gboolean
++_client_subscription_status_update (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GVariant) uuid = NULL;
++	const gchar *uuid_txt = NULL;
++	JsonNode *json_root;
++	JsonObject *json_obj;
++	const gchar *json_txt = NULL;
++	g_autoptr(GVariant) status = NULL;
++	g_autoptr(JsonParser) json_parser = json_parser_new ();
++
++	/* save old value */
++	priv->subscription_status_last = priv->subscription_status;
++
++	if (!_client_installed_products_update (manager, error)) {
++		return FALSE;
++	}
++
++	if (priv->installed_products->len == 0) {
++		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS;
++		goto out;
++	}
++
++	uuid = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_CONSUMER],
++				       "GetUuid",
++				       g_variant_new ("(s)",
++				                      "C.UTF-8"),
++				       G_DBUS_CALL_FLAGS_NONE,
++				       -1, NULL, error);
++	if (uuid == NULL)
++		return FALSE;
++
++	g_variant_get (uuid, "(&s)", &uuid_txt);
++
++	if (uuid_txt[0] == '\0') {
++		priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN;
++		goto out;
++	}
++
++	status = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_ENTITLEMENT],
++				         "GetStatus",
++				         g_variant_new ("(ss)",
++						        "", /* assumed as 'now' */
++						        "C.UTF-8"),
++				         G_DBUS_CALL_FLAGS_NONE,
++				         -1, NULL, error);
++	if (status == NULL)
++		return FALSE;
++	g_variant_get (status, "(&s)", &json_txt);
++	g_debug ("Entitlement.GetStatus JSON: %s", json_txt);
++	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
++		return FALSE;
++	json_root = json_parser_get_root (json_parser);
++	json_obj = json_node_get_object (json_root);
++
++	const gchar *status_id = NULL;
++
++	if (json_object_has_member (json_obj, "status_id")) {
++		status_id = json_object_get_string_member (json_obj, "status_id");
++	}
++
++	if (!json_object_has_member (json_obj, "valid")) {
++		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++			     "no Entitlement.GetStatus valid in %s", json_txt);
++		return FALSE;
++	}
++
++	gboolean is_valid = json_object_get_boolean_member (json_obj, "valid");
++
++	if (is_valid) {
++		if (g_strcmp0 (status_id, "disabled") != 0) {
++			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID;
++		} else {
++			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED;
++		}
++		goto out;
++	}
++
++	for (guint i = 0; i < priv->installed_products->len; i++) {
++		ProductData *product = g_ptr_array_index (priv->installed_products, i);
++
++		if (g_strcmp0 (product->status, "subscribed") == 0) {
++			priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID;
++			goto out;
++		}
++	}
++
++	priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID;
++
++out:
++	/* emit notification for g-c-c */
++	if (priv->subscription_status != priv->subscription_status_last) {
++		_emit_property_changed (manager, "SubscriptionStatus",
++				       g_variant_new_uint32 (priv->subscription_status));
++	}
++
++	return TRUE;
++}
++
++static gboolean
++_client_syspurpose_update (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	JsonNode *json_root;
++	JsonObject *json_obj;
++	const gchar *json_txt = NULL;
++	g_autoptr(GVariant) val = NULL;
++	g_autoptr(JsonParser) json_parser = json_parser_new ();
++
++	val = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_SYSPURPOSE],
++				      "GetSyspurpose",
++				      g_variant_new ("(s)", "C.UTF-8"),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      -1, NULL, error);
++	if (val == NULL)
++		return FALSE;
++	g_variant_get (val, "(&s)", &json_txt);
++	g_debug ("Syspurpose.GetSyspurpose JSON: %s", json_txt);
++	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
++		return FALSE;
++	json_root = json_parser_get_root (json_parser);
++	json_obj = json_node_get_object (json_root);
++	if (!json_object_has_member (json_obj, "status")) {
++		g_debug ("Syspurpose.GetSyspurpose: Unknown");
++		return TRUE;
++	}
++	g_debug ("Syspurpose.GetSyspurpose: '%s", json_object_get_string_member (json_obj, "status"));
++	return TRUE;
++}
++
++static gboolean
++_client_register_start (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	const gchar *address = NULL;
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GVariant) val = NULL;
++
++	/* already started */
++	if (priv->address != NULL)
++		return TRUE;
++
++	/* apparently: "we can't send registration credentials over the regular
++	 * system or session bus since those aren't really locked down..." */
++	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++					       G_DBUS_PROXY_FLAGS_NONE,
++					       NULL,
++					       "com.redhat.RHSM1",
++					       "/com/redhat/RHSM1/RegisterServer",
++					       "com.redhat.RHSM1.RegisterServer",
++					       NULL, error);
++	if (proxy == NULL)
++		return FALSE;
++	val = g_dbus_proxy_call_sync (proxy, "Start",
++				      g_variant_new ("(s)", "C.UTF-8"),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      -1, NULL, error);
++	if (val == NULL)
++		return FALSE;
++	g_variant_get (val, "(&s)", &address);
++	g_debug ("RegisterServer.Start: %s", address);
++	priv->address = g_strdup (address);
++	return TRUE;
++}
++
++static gboolean
++_client_register_stop (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GDBusProxy) proxy = NULL;
++	g_autoptr(GVariant) val = NULL;
++
++	/* already started */
++	if (priv->address == NULL)
++		return TRUE;
++
++	/* stop registration server */
++	proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++					       G_DBUS_PROXY_FLAGS_NONE,
++					       NULL,
++					       "com.redhat.RHSM1",
++					       "/com/redhat/RHSM1/RegisterServer",
++					       "com.redhat.RHSM1.RegisterServer",
++					       NULL, error);
++	if (proxy == NULL)
++		return FALSE;
++	val = g_dbus_proxy_call_sync (proxy, "Stop",
++				      g_variant_new ("(s)", "C.UTF-8"),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      -1, NULL, error);
++	if (val == NULL)
++		return FALSE;
++	g_clear_pointer (&priv->address, g_free);
++	return TRUE;
++}
++
++static gboolean
++_client_subprocess_wait_check (GSubprocess *subprocess, GError **error)
++{
++	gint rc;
++	if (!g_subprocess_wait (subprocess, NULL, error)) {
++		g_prefix_error (error, "failed to run pkexec: ");
++		return FALSE;
++	}
++	rc = g_subprocess_get_exit_status (subprocess);
++	if (rc != 0) {
++		GInputStream *istream = g_subprocess_get_stderr_pipe (subprocess);
++		gchar buf[1024] = { 0x0 };
++		gsize sz = 0;
++		g_input_stream_read_all (istream, buf, sizeof(buf) - 1, &sz, NULL, NULL);
++		if (sz == 0) {
++			g_set_error_literal (error, G_IO_ERROR, rc,
++					     "Failed to run helper without stderr");
++			return FALSE;
++		}
++		g_set_error_literal (error, G_IO_ERROR, rc, buf);
++		return FALSE;
++	}
++	return TRUE;
++}
++
++typedef enum {
++	_NOTIFY_EXPIRED,
++	_NOTIFY_REGISTRATION_REQUIRED,
++	_NOTIFY_REGISTERED
++} _NotifyKind;
++
++static void
++_show_notification (GsdSubscriptionManager *manager, _NotifyKind notify_kind)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	switch (notify_kind) {
++	case _NOTIFY_EXPIRED:
++		notify_notification_close (priv->notification_registered, NULL);
++		notify_notification_close (priv->notification_registration_required, NULL);
++		notify_notification_show (priv->notification_expired, NULL);
++		break;
++	case _NOTIFY_REGISTRATION_REQUIRED:
++		notify_notification_close (priv->notification_registered, NULL);
++		notify_notification_close (priv->notification_expired, NULL);
++		notify_notification_show (priv->notification_registration_required, NULL);
++		break;
++	case _NOTIFY_REGISTERED:
++		notify_notification_close (priv->notification_expired, NULL);
++		notify_notification_close (priv->notification_registration_required, NULL);
++		notify_notification_show (priv->notification_registered, NULL);
++		break;
++	default:
++		break;
++	}
++	g_timer_reset (priv->timer_last_notified);
++}
++
++static void
++_client_maybe__show_notification (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	gboolean was_read, was_registered, had_subscriptions, needed_subscriptions;
++	gboolean is_read, is_registered, has_subscriptions, needs_subscriptions;
++
++	switch (priv->subscription_status_last) {
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_NOT_READ:
++			was_read = FALSE;
++			was_registered = FALSE;
++			needed_subscriptions = TRUE;
++			had_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN:
++			was_read = TRUE;
++			was_registered = FALSE;
++			needed_subscriptions = TRUE;
++			had_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID:
++			was_read = TRUE;
++			was_registered = TRUE;
++			needed_subscriptions = TRUE;
++			had_subscriptions = TRUE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID:
++			was_read = TRUE;
++			was_registered = TRUE;
++			needed_subscriptions = TRUE;
++			had_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED:
++			was_read = TRUE;
++			was_registered = TRUE;
++			needed_subscriptions = FALSE;
++			had_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID:
++			was_read = TRUE;
++			was_registered = TRUE;
++			needed_subscriptions = TRUE;
++			had_subscriptions = FALSE;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS:
++			was_read = TRUE;
++			was_registered = FALSE;
++			needed_subscriptions = FALSE;
++			had_subscriptions = FALSE;
++			break;
++	}
++
++	switch (priv->subscription_status) {
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_NOT_READ:
++			is_read = FALSE;
++			is_registered = FALSE;
++			needs_subscriptions = TRUE;
++			has_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN:
++			is_read = TRUE;
++			is_registered = FALSE;
++			needs_subscriptions = TRUE;
++			has_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_VALID:
++			is_read = TRUE;
++			is_registered = TRUE;
++			needs_subscriptions = TRUE;
++			has_subscriptions = TRUE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_PARTIALLY_VALID:
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_INVALID:
++			is_read = TRUE;
++			is_registered = TRUE;
++			needs_subscriptions = TRUE;
++			has_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_DISABLED:
++			is_read = TRUE;
++			is_registered = TRUE;
++			needs_subscriptions = FALSE;
++			has_subscriptions = FALSE;
++			break;
++		case GSD_SUBMAN_SUBSCRIPTION_STATUS_NO_INSTALLED_PRODUCTS:
++			is_read = TRUE;
++			is_registered = FALSE;
++			needs_subscriptions = FALSE;
++			has_subscriptions = FALSE;
++			break;
++	}
++
++	/* startup */
++	if (!was_read && is_read && priv->subscription_status == GSD_SUBMAN_SUBSCRIPTION_STATUS_UNKNOWN) {
++		_show_notification (manager, _NOTIFY_REGISTRATION_REQUIRED);
++		return;
++	}
++
++	/* something changed */
++	if (was_read && is_read && priv->subscription_status_last != priv->subscription_status) {
++		g_debug ("transisition from subscription status '%s' to '%s'",
++			 gsd_subman_subscription_status_to_string (priv->subscription_status_last),
++			 gsd_subman_subscription_status_to_string (priv->subscription_status));
++
++		/* needs subscription */
++		if (is_registered && needs_subscriptions && !has_subscriptions) {
++			_show_notification (manager, _NOTIFY_EXPIRED);
++			return;
++		}
++
++		/* was unregistered */
++		if (was_registered && !is_registered) {
++			_show_notification (manager, _NOTIFY_REGISTRATION_REQUIRED);
++			return;
++		}
++
++		/* just registered */
++		if (!was_registered && is_registered) {
++			if (!needs_subscriptions || has_subscriptions) {
++				_show_notification (manager, _NOTIFY_REGISTERED);
++				return;
++			}
++		}
++
++		/* subscriptions changed */
++		if (was_registered && is_registered) {
++			/* subscribed */
++			if (!had_subscriptions &&
++			    needs_subscriptions && has_subscriptions) {
++				_show_notification (manager, _NOTIFY_REGISTERED);
++				return;
++			}
++
++			/* simple content access enabled */
++			if (needed_subscriptions && !had_subscriptions && !needs_subscriptions) {
++				_show_notification (manager, _NOTIFY_REGISTERED);
++				return;
++			}
++		}
++	}
++
++	/* nag again */
++	if (!is_registered &&
++	    g_timer_elapsed (priv->timer_last_notified, NULL) > 60 * 60 * 24) {
++		_show_notification (manager, _NOTIFY_REGISTRATION_REQUIRED);
++		return;
++	}
++	if (is_registered && !has_subscriptions && needs_subscriptions &&
++	    g_timer_elapsed (priv->timer_last_notified, NULL) > 60 * 60 * 24) {
++		_show_notification (manager, _NOTIFY_EXPIRED);
++		return;
++	}
++}
++
++static gboolean
++_client_register_with_keys (GsdSubscriptionManager *manager,
++				  const gchar *hostname,
++				  const gchar *organisation,
++				  const gchar *activation_key,
++				  GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GSubprocess) subprocess = NULL;
++	g_autoptr(GBytes) stdin_buf = g_bytes_new (activation_key, strlen (activation_key) + 1);
++	g_autoptr(GBytes) stderr_buf = NULL;
++	gint rc;
++
++	/* apparently: "we can't send registration credentials over the regular
++	 * system or session bus since those aren't really locked down..." */
++	if (!_client_register_start (manager, error))
++		return FALSE;
++	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
++	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, error,
++				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
++				       "--kind", "register-with-key",
++				       "--address", priv->address,
++				       "--hostname", hostname,
++				       "--organisation", organisation,
++				       NULL);
++	if (subprocess == NULL) {
++		g_prefix_error (error, "failed to find pkexec: ");
++		return FALSE;
++	}
++
++	if (!g_subprocess_communicate (subprocess, stdin_buf, NULL, NULL, &stderr_buf, error)) {
++		g_prefix_error (error, "failed to run pkexec: ");
++		return FALSE;
++	}
++
++	rc = g_subprocess_get_exit_status (subprocess);
++	if (rc != 0) {
++		if (g_bytes_get_size (stderr_buf) == 0) {
++			g_set_error_literal (error, G_IO_ERROR, rc,
++			                     "Failed to run helper without stderr");
++			return FALSE;
++		}
++
++		g_set_error (error, G_IO_ERROR, rc,
++			     "%.*s",
++			     (int) g_bytes_get_size (stderr_buf),
++			     (char *) g_bytes_get_data (stderr_buf, NULL));
++	}
++
++	/* FIXME: also do on error? */
++	if (!_client_register_stop (manager, error))
++		return FALSE;
++	if (!_client_subscription_status_update (manager, error))
++		return FALSE;
++	_client_maybe__show_notification (manager);
++
++	/* success */
++	return TRUE;
++}
++
++static gboolean
++_client_register (GsdSubscriptionManager *manager,
++			 const gchar *hostname,
++			 const gchar *organisation,
++			 const gchar *username,
++			 const gchar *password,
++			 GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GSubprocess) subprocess = NULL;
++	g_autoptr(GBytes) stdin_buf = g_bytes_new (password, strlen (password) + 1);
++	g_autoptr(GBytes) stderr_buf = NULL;
++	gint rc;
++
++	/* fallback */
++	if (organisation == NULL)
++		organisation = "";
++
++	/* apparently: "we can't send registration credentials over the regular
++	 * system or session bus since those aren't really locked down..." */
++	if (!_client_register_start (manager, error))
++		return FALSE;
++	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
++	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
++				       error,
++				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
++				       "--kind", "register-with-username",
++				       "--address", priv->address,
++				       "--hostname", hostname,
++				       "--organisation", organisation,
++				       "--username", username,
++				       NULL);
++	if (subprocess == NULL) {
++		g_prefix_error (error, "failed to find pkexec: ");
++		return FALSE;
++	}
++
++	if (!g_subprocess_communicate (subprocess, stdin_buf, NULL, NULL, &stderr_buf, error)) {
++		g_prefix_error (error, "failed to run pkexec: ");
++		return FALSE;
++	}
++
++	rc = g_subprocess_get_exit_status (subprocess);
++	if (rc != 0) {
++		if (g_bytes_get_size (stderr_buf) == 0) {
++			g_set_error_literal (error, G_IO_ERROR, rc,
++			                     "Failed to run helper without stderr");
++			return FALSE;
++		}
++
++		g_set_error (error, G_IO_ERROR, rc,
++			     "%.*s",
++			     (int) g_bytes_get_size (stderr_buf),
++			     (char *) g_bytes_get_data (stderr_buf, NULL));
++	}
++
++	/* FIXME: also do on error? */
++	if (!_client_register_stop (manager, error))
++		return FALSE;
++	if (!_client_subscription_status_update (manager, error))
++		return FALSE;
++	_client_maybe__show_notification (manager);
++	return TRUE;
++}
++
++static gboolean
++_client_unregister (GsdSubscriptionManager *manager, GError **error)
++{
++	g_autoptr(GSubprocess) subprocess = NULL;
++
++	/* apparently: "we can't send registration credentials over the regular
++	 * system or session bus since those aren't really locked down..." */
++	if (!_client_register_start (manager, error))
++		return FALSE;
++	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
++	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDERR_PIPE, error,
++				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
++				       "--kind", "unregister",
++				       NULL);
++	if (subprocess == NULL) {
++		g_prefix_error (error, "failed to find pkexec: ");
++		return FALSE;
++	}
++	if (!_client_subprocess_wait_check (subprocess, error))
++		return FALSE;
++	if (!_client_subscription_status_update (manager, error))
++		return FALSE;
++	if (!_client_installed_products_update (manager, error))
++		return FALSE;
++	_client_maybe__show_notification (manager);
++	return TRUE;
++}
++
++static gboolean
++_client_attach (GsdSubscriptionManager *manager,
++		GError **error)
++{
++	g_autoptr(GSubprocess) subprocess = NULL;
++	g_autoptr(GBytes) stderr_buf = NULL;
++	gint rc;
++
++	g_debug ("spawning %s", LIBEXECDIR "/gsd-subman-helper");
++	subprocess = g_subprocess_new (G_SUBPROCESS_FLAGS_STDERR_PIPE,
++				       error,
++				       "pkexec", LIBEXECDIR "/gsd-subman-helper",
++				       "--kind", "auto-attach",
++				       NULL);
++	if (subprocess == NULL) {
++		g_prefix_error (error, "failed to find pkexec: ");
++		return FALSE;
++	}
++
++	if (!g_subprocess_communicate (subprocess, NULL, NULL, NULL, &stderr_buf, error)) {
++		g_prefix_error (error, "failed to run pkexec: ");
++		return FALSE;
++	}
++
++	rc = g_subprocess_get_exit_status (subprocess);
++	if (rc != 0) {
++		if (g_bytes_get_size (stderr_buf) == 0) {
++			g_set_error_literal (error, G_IO_ERROR, rc,
++			                     "Failed to run helper without stderr");
++			return FALSE;
++		}
++
++		g_set_error (error, G_IO_ERROR, rc,
++			     "%.*s",
++			     (int) g_bytes_get_size (stderr_buf),
++			     (char *) g_bytes_get_data (stderr_buf, NULL));
++	}
++
++	if (!_client_subscription_status_update (manager, error))
++		return FALSE;
++	_client_maybe__show_notification (manager);
++	return TRUE;
++}
++
++static gboolean
++_client_update_config (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GVariant) val = NULL;
++	g_autoptr(GVariant) val_server = NULL;
++	g_autoptr(GVariantDict) dict = NULL;
++	GVariantIter iter;
++	gchar *key;
++	gchar *value;
++
++	val = g_dbus_proxy_call_sync (priv->proxies[_RHSM_INTERFACE_CONFIG],
++				      "GetAll",
++				      g_variant_new ("(s)", "C.UTF-8"),
++				      G_DBUS_CALL_FLAGS_NONE,
++				      -1, NULL, error);
++	if (val == NULL)
++		return FALSE;
++	dict = g_variant_dict_new (g_variant_get_child_value (val, 0));
++	val_server = g_variant_dict_lookup_value (dict, "server", G_VARIANT_TYPE("a{ss}"));
++	if (val_server != NULL) {
++		g_variant_iter_init (&iter, val_server);
++		while (g_variant_iter_next (&iter, "{ss}", &key, &value)) {
++			g_debug ("%s=%s", key, value);
++			g_hash_table_insert (priv->config,
++					     g_steal_pointer (&key),
++					     g_steal_pointer (&value));
++		}
++	}
++	return TRUE;
++}
++
++static void
++_subman_proxy_signal_cb (GDBusProxy *proxy,
++			 const gchar *sender_name,
++			 const gchar *signal_name,
++			 GVariant *parameters,
++			 GsdSubscriptionManager *manager)
++{
++	g_autoptr(GError) error = NULL;
++	if (!_client_syspurpose_update (manager, &error)) {
++		g_warning ("failed to update syspurpose: %s", error->message);
++		g_clear_error (&error);
++	}
++	if (!_client_subscription_status_update (manager, &error)) {
++		g_warning ("failed to update subscription status: %s", error->message);
++		g_clear_error (&error);
++	}
++	_client_maybe__show_notification (manager);
++}
++
++static void
++_client_unload (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	for (guint i = 0; i < _RHSM_INTERFACE_LAST; i++)
++		g_clear_object (&priv->proxies[i]);
++	g_hash_table_unref (priv->config);
++}
++
++static const gchar *
++_rhsm_interface_to_string (_RhsmInterface kind)
++{
++	if (kind == _RHSM_INTERFACE_CONFIG)
++		return "Config";
++	if (kind == _RHSM_INTERFACE_REGISTER_SERVER)
++		return "RegisterServer";
++	if (kind == _RHSM_INTERFACE_ATTACH)
++		return "Attach";
++	if (kind == _RHSM_INTERFACE_ENTITLEMENT)
++		return "Entitlement";
++	if (kind == _RHSM_INTERFACE_PRODUCTS)
++		return "Products";
++	if (kind == _RHSM_INTERFACE_CONSUMER)
++		return "Consumer";
++	if (kind == _RHSM_INTERFACE_SYSPURPOSE)
++		return "Syspurpose";
++	return NULL;
++}
++
++static void
++finish_loading (GsdSubscriptionManager *manager)
++{
++	g_autoptr (GError) error = NULL;
++
++	if (!_client_update_config (manager, &error)) {
++		g_debug ("Could not read subscription manager config: %s",
++			 error->message);
++		return;
++	}
++
++	if (!_client_subscription_status_update (manager, &error)) {
++		g_debug ("Could not read subscription manager status: %s",
++			 error->message);
++		return;
++	}
++
++	if (!_client_syspurpose_update (manager, &error)) {
++		g_debug ("Could not read system purpose from subscription manager: %s",
++			 error->message);
++		return;
++	}
++
++	_client_maybe__show_notification (manager);
++}
++
++static void
++on_subscription_manager_available (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autofree char *name_owner = NULL;
++
++	name_owner = g_dbus_proxy_get_name_owner (priv->proxies[0]);
++
++	if (name_owner == NULL) {
++		notify_notification_close (priv->notification_registered, NULL);
++		notify_notification_close (priv->notification_registration_required, NULL);
++		notify_notification_close (priv->notification_expired, NULL);
++		return;
++	}
++
++	finish_loading (manager);
++}
++
++static gboolean
++start_loading (GsdSubscriptionManager *manager, GError **error)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	g_autoptr(GDBusConnection) connection = NULL;
++	g_autofree char *name_owner = NULL;
++
++	priv->config = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
++
++	connection = g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, error);
++
++	if (connection == NULL) {
++		return FALSE;
++	}
++
++	g_dbus_connection_call (connection,
++			        "org.freedesktop.DBus",
++			        "/org/freedesktop/DBus",
++			        "org.freedesktop.DBus",
++			        "StartServiceByName",
++			        g_variant_new("(su)", "com.redhat.RHSM1", 0),
++			        NULL,
++			        G_DBUS_CALL_FLAGS_NONE,
++			        -1,
++			        NULL,
++			        NULL,
++			        NULL);
++
++	/* connect to all the interfaces on the *different* objects :| */
++	for (guint i = 0; i < _RHSM_INTERFACE_LAST; i++) {
++		const gchar *kind = _rhsm_interface_to_string (i);
++		g_autofree gchar *opath = g_strdup_printf ("/com/redhat/RHSM1/%s", kind);
++		g_autofree gchar *iface = g_strdup_printf ("com.redhat.RHSM1.%s", kind);
++		priv->proxies[i] =
++			g_dbus_proxy_new_sync (connection,
++						G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START_AT_CONSTRUCTION,
++						NULL,
++						"com.redhat.RHSM1",
++						opath, iface,
++						NULL,
++						error);
++		if (priv->proxies[i] == NULL)
++			return FALSE;
++		/* we want to get notified if the status of the system changes */
++		g_signal_connect (priv->proxies[i], "g-signal",
++				  G_CALLBACK (_subman_proxy_signal_cb), manager);
++
++	}
++
++	g_signal_connect_object (G_OBJECT (priv->proxies[0]),
++				 "notify::g-name-owner",
++				 G_CALLBACK (on_subscription_manager_available),
++				 manager,
++				 G_CONNECT_SWAPPED);
++
++	name_owner = g_dbus_proxy_get_name_owner (priv->proxies[0]);
++	if (name_owner != NULL) {
++		finish_loading (manager);
++	}
++
++	/* success */
++	return TRUE;
++}
++
++gboolean
++gsd_subscription_manager_start (GsdSubscriptionManager *manager, GError **error)
++{
++	g_autoptr (GError) local_error = NULL;
++
++	g_debug ("Starting subscription manager");
++	gnome_settings_profile_start (NULL);
++	if (!start_loading (manager, &local_error)) {
++		g_debug ("Could not start subscription manager: %s",
++			 local_error->message);
++	}
++	gnome_settings_profile_end (NULL);
++	return TRUE;
++}
++
++void
++gsd_subscription_manager_stop (GsdSubscriptionManager *manager)
++{
++	g_debug ("Stopping subscription manager");
++	_client_unload (manager);
++}
++
++static void
++gsd_subscription_manager_class_init (GsdSubscriptionManagerClass *klass)
++{
++	GObjectClass *object_class = G_OBJECT_CLASS (klass);
++	object_class->finalize = gsd_subscription_manager_finalize;
++        notify_init ("gnome-settings-daemon");
++}
++
++static void
++_launch_info_overview (void)
++{
++	const gchar *argv[] = { "gnome-control-center", "system", "subman", NULL };
++	g_debug ("Running gnome-control-center system subman");
++	g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH,
++		       NULL, NULL, NULL, NULL);
++}
++
++static void
++_notify_closed_cb (NotifyNotification *notification, gpointer user_data)
++{
++	/* FIXME: only launch when clicking on the main body, not the window close */
++	if (notify_notification_get_closed_reason (notification) == 0x400)
++		_launch_info_overview ();
++}
++
++static void
++_notify_clicked_cb (NotifyNotification *notification, char *action, gpointer user_data)
++{
++	_launch_info_overview ();
++}
++
++static void
++gsd_subscription_manager_init (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++
++	priv->installed_products = g_ptr_array_new_with_free_func ((GDestroyNotify) product_data_free);
++	priv->timer_last_notified = g_timer_new ();
++	priv->subscription_status = GSD_SUBMAN_SUBSCRIPTION_STATUS_NOT_READ;
++	priv->subscription_status_last = GSD_SUBMAN_SUBSCRIPTION_STATUS_NOT_READ;
++
++	/* expired */
++	priv->notification_expired =
++		notify_notification_new (_("Subscription Has Expired"),
++					 _("Add or renew a subscription to continue receiving software updates."),
++					 "preferences-system");
++	notify_notification_set_app_name (priv->notification_expired, _("Subscription"));
++	notify_notification_set_hint_string (priv->notification_expired, "desktop-entry", "gnome-info-overview-panel");
++	notify_notification_set_hint_string (priv->notification_expired, "x-gnome-privacy-scope", "system");
++	notify_notification_set_urgency (priv->notification_expired, NOTIFY_URGENCY_CRITICAL);
++	notify_notification_add_action (priv->notification_expired,
++					"info-overview", _("Subscribe System…"),
++					_notify_clicked_cb,
++					manager, NULL);
++	g_signal_connect (priv->notification_expired, "closed",
++			  G_CALLBACK (_notify_closed_cb), manager);
++
++	/* registered */
++	priv->notification_registered =
++		notify_notification_new (_("Registration Successful"),
++					 _("The system has been registered and software updates have been enabled."),
++					 "preferences-system");
++	notify_notification_set_app_name (priv->notification_registered, _("Subscription"));
++	notify_notification_set_hint_string (priv->notification_registered, "desktop-entry", "gnome-info-overview-panel");
++	notify_notification_set_hint_string (priv->notification_registered, "x-gnome-privacy-scope", "system");
++	notify_notification_set_urgency (priv->notification_registered, NOTIFY_URGENCY_CRITICAL);
++	g_signal_connect (priv->notification_registered, "closed",
++			  G_CALLBACK (_notify_closed_cb), manager);
++
++	/* registration required */
++	priv->notification_registration_required =
++		notify_notification_new (_("System Not Registered"),
++					 _("Please register your system to receive software updates."),
++					 "preferences-system");
++	notify_notification_set_app_name (priv->notification_registration_required, _("Subscription"));
++	notify_notification_set_hint_string (priv->notification_registration_required, "desktop-entry", "gnome-info-overview-panel");
++	notify_notification_set_hint_string (priv->notification_registration_required, "x-gnome-privacy-scope", "system");
++	notify_notification_set_urgency (priv->notification_registration_required, NOTIFY_URGENCY_CRITICAL);
++	notify_notification_add_action (priv->notification_registration_required,
++					"info-overview", _("Register System…"),
++					_notify_clicked_cb,
++					manager, NULL);
++	g_signal_connect (priv->notification_registration_required, "closed",
++			  G_CALLBACK (_notify_closed_cb), manager);
++}
++
++static void
++gsd_subscription_manager_finalize (GObject *object)
++{
++	GsdSubscriptionManager *manager;
++	GsdSubscriptionManagerPrivate *priv;
++
++	g_return_if_fail (object != NULL);
++	g_return_if_fail (GSD_IS_SUBSCRIPTION_MANAGER (object));
++
++	manager = GSD_SUBSCRIPTION_MANAGER (object);
++    priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++
++	gsd_subscription_manager_stop (manager);
++
++	if (priv->bus_cancellable != NULL) {
++		g_cancellable_cancel (priv->bus_cancellable);
++		g_clear_object (&priv->bus_cancellable);
++	}
++
++	g_clear_pointer (&priv->installed_products, g_ptr_array_unref);
++	g_clear_pointer (&priv->introspection_data, g_dbus_node_info_unref);
++	g_clear_object (&priv->connection);
++	g_clear_object (&priv->notification_expired);
++	g_clear_object (&priv->notification_registered);
++	g_timer_destroy (priv->timer_last_notified);
++
++	if (priv->name_id != 0) {
++		g_bus_unown_name (priv->name_id);
++		priv->name_id = 0;
++	}
++
++	G_OBJECT_CLASS (gsd_subscription_manager_parent_class)->finalize (object);
++}
++
++static void
++handle_method_call (GDBusConnection       *connection,
++		    const gchar           *sender,
++		    const gchar           *object_path,
++		    const gchar           *interface_name,
++		    const gchar           *method_name,
++		    GVariant              *parameters,
++		    GDBusMethodInvocation *invocation,
++		    gpointer               user_data)
++{
++	GsdSubscriptionManager *manager = GSD_SUBSCRIPTION_MANAGER (user_data);
++	g_autoptr(GError) error = NULL;
++
++	if (g_strcmp0 (method_name, "Register") == 0) {
++		const gchar *organisation = NULL;
++		const gchar *hostname = NULL;
++
++		if (FALSE) {
++			g_dbus_method_invocation_return_error_literal (invocation,
++								       G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED,
++								       "Cannot register at this time");
++
++			return;
++		}
++
++		g_autoptr(GVariantDict) dict = g_variant_dict_new (g_variant_get_child_value (parameters, 0));
++
++		const gchar *kind = NULL;
++		if (!g_variant_dict_lookup (dict, "kind", "&s", &kind)) {
++			g_dbus_method_invocation_return_error_literal (invocation,
++								       G_IO_ERROR, G_IO_ERROR_FAILED,
++								       "No kind specified");
++
++			return;
++		}
++		if (g_strcmp0 (kind, "username") == 0) {
++			const gchar *username = NULL;
++			const gchar *password = NULL;
++			g_variant_dict_lookup (dict, "hostname", "&s", &hostname);
++			g_variant_dict_lookup (dict, "organisation", "&s", &organisation);
++			g_variant_dict_lookup (dict, "username", "&s", &username);
++			g_variant_dict_lookup (dict, "password", "&s", &password);
++			if (!_client_register (manager,
++						     hostname,
++						     organisation,
++						     username,
++						     password,
++						     &error)) {
++				g_dbus_method_invocation_return_gerror (invocation, error);
++				return;
++			}
++		} else if (g_strcmp0 (kind, "key") == 0) {
++			const gchar *activation_key = NULL;
++			g_variant_dict_lookup (dict, "hostname", "&s", &hostname);
++			g_variant_dict_lookup (dict, "organisation", "&s", &organisation);
++			g_variant_dict_lookup (dict, "activation-key", "&s", &activation_key);
++			if (!_client_register_with_keys (manager,
++							       hostname,
++							       organisation,
++							       activation_key,
++							       &error)) {
++				g_dbus_method_invocation_return_gerror (invocation, error);
++				return;
++			}
++		} else {
++			g_dbus_method_invocation_return_error_literal (invocation,
++								       G_IO_ERROR, G_IO_ERROR_FAILED,
++								       "Invalid kind specified");
++
++			return;
++		}
++		g_dbus_method_invocation_return_value (invocation, NULL);
++	} else if (g_strcmp0 (method_name, "Unregister") == 0) {
++		if (!_client_unregister (manager, &error)) {
++			g_dbus_method_invocation_return_gerror (invocation, error);
++			return;
++		}
++		g_dbus_method_invocation_return_value (invocation, NULL);
++	} else if (g_strcmp0 (method_name, "Attach") == 0) {
++		if (!_client_attach (manager, &error)) {
++			g_dbus_method_invocation_return_gerror (invocation, error);
++			return;
++		}
++		g_dbus_method_invocation_return_value (invocation, NULL);
++	} else {
++		g_assert_not_reached ();
++	}
++}
++
++static GVariant *
++handle_get_property (GDBusConnection *connection,
++		     const gchar *sender,
++		     const gchar *object_path,
++		     const gchar *interface_name,
++		     const gchar *property_name,
++		     GError **error, gpointer user_data)
++{
++	GsdSubscriptionManager *manager = GSD_SUBSCRIPTION_MANAGER (user_data);
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++
++	if (g_strcmp0 (interface_name, GSD_SUBSCRIPTION_DBUS_INTERFACE) != 0) {
++		g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
++			     "No such interface: %s", interface_name);
++		return NULL;
++	}
++
++	if (g_strcmp0 (property_name, "SubscriptionStatus") == 0) {
++		return g_variant_new_uint32 (priv->subscription_status);
++	}
++
++	if (g_strcmp0 (property_name, "InstalledProducts") == 0)
++		return _make_installed_products_variant (priv->installed_products);
++
++	g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
++		     "Failed to get property: %s", property_name);
++	return NULL;
++}
++
++static gboolean
++handle_set_property (GDBusConnection *connection,
++		     const gchar *sender,
++		     const gchar *object_path,
++		     const gchar *interface_name,
++		     const gchar *property_name,
++		     GVariant *value,
++		     GError **error, gpointer user_data)
++{
++	if (g_strcmp0 (interface_name, GSD_SUBSCRIPTION_DBUS_INTERFACE) != 0) {
++		g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
++			     "No such interface: %s", interface_name);
++		return FALSE;
++	}
++	g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
++		     "No such property: %s", property_name);
++	return FALSE;
++}
++
++static const GDBusInterfaceVTable interface_vtable =
++{
++	handle_method_call,
++	handle_get_property,
++	handle_set_property
++};
++
++static void
++name_lost_handler_cb (GDBusConnection *connection, const gchar *name, gpointer user_data)
++{
++	g_debug ("lost name, so exiting");
++	gtk_main_quit ();
++}
++
++static void
++on_bus_gotten (GObject *source_object, GAsyncResult *res, GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++	GDBusConnection *connection;
++	g_autoptr(GError) error = NULL;
++
++	connection = g_bus_get_finish (res, &error);
++	if (connection == NULL) {
++		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
++			g_warning ("Could not get session bus: %s", error->message);
++		return;
++	}
++
++	priv->connection = connection;
++	g_dbus_connection_register_object (connection,
++					   GSD_SUBSCRIPTION_DBUS_PATH,
++					   priv->introspection_data->interfaces[0],
++					   &interface_vtable,
++					   manager,
++					   NULL,
++					   NULL);
++	priv->name_id = g_bus_own_name_on_connection (connection,
++						      GSD_SUBSCRIPTION_DBUS_NAME,
++						      G_BUS_NAME_OWNER_FLAGS_NONE,
++						      NULL,
++						      name_lost_handler_cb,
++						      manager,
++						      NULL);
++}
++
++static void
++register_manager_dbus (GsdSubscriptionManager *manager)
++{
++	GsdSubscriptionManagerPrivate *priv = GSD_SUBSCRIPTION_MANAGER_GET_PRIVATE (manager);
++
++	priv->introspection_data = g_dbus_node_info_new_for_xml (introspection_xml, NULL);
++	g_assert (priv->introspection_data != NULL);
++	priv->bus_cancellable = g_cancellable_new ();
++
++	g_bus_get (G_BUS_TYPE_SESSION, priv->bus_cancellable,
++		   (GAsyncReadyCallback) on_bus_gotten, manager);
++}
++
++GsdSubscriptionManager *
++gsd_subscription_manager_new (void)
++{
++	if (manager_object != NULL) {
++		g_object_ref (manager_object);
++	} else {
++		manager_object = g_object_new (GSD_TYPE_SUBSCRIPTION_MANAGER, NULL);
++		g_object_add_weak_pointer (manager_object,
++					   (gpointer *) &manager_object);
++		register_manager_dbus (manager_object);
++	}
++
++	return GSD_SUBSCRIPTION_MANAGER (manager_object);
++}
+diff --git a/plugins/subman/gsd-subscription-manager.h b/plugins/subman/gsd-subscription-manager.h
+new file mode 100644
+index 00000000..b3ddcfc9
+--- /dev/null
++++ b/plugins/subman/gsd-subscription-manager.h
+@@ -0,0 +1,50 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2019 Richard Hughes <richard@hughsie.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef __GSD_SUBSCRIPTION_MANAGER_H
++#define __GSD_SUBSCRIPTION_MANAGER_H
++
++#include <glib-object.h>
++
++G_BEGIN_DECLS
++
++#define GSD_TYPE_SUBSCRIPTION_MANAGER		(gsd_subscription_manager_get_type ())
++
++G_DECLARE_DERIVABLE_TYPE (GsdSubscriptionManager, gsd_subscription_manager, GSD, SUBSCRIPTION_MANAGER, GObject)
++
++struct _GsdSubscriptionManagerClass
++{
++	GObjectClass			parent_class;
++};
++
++enum
++{
++	GSD_SUBSCRIPTION_MANAGER_ERROR_FAILED
++};
++
++GQuark			gsd_subscription_manager_error_quark    (void);
++
++GsdSubscriptionManager *gsd_subscription_manager_new		(void);
++gboolean		gsd_subscription_manager_start		(GsdSubscriptionManager *manager,
++								 GError                **error);
++void			gsd_subscription_manager_stop		(GsdSubscriptionManager *manager);
++
++G_END_DECLS
++
++#endif /* __GSD_SUBSCRIPTION_MANAGER_H */
+diff --git a/plugins/subman/main.c b/plugins/subman/main.c
+new file mode 100644
+index 00000000..839c1b79
+--- /dev/null
++++ b/plugins/subman/main.c
+@@ -0,0 +1,7 @@
++#define NEW gsd_subscription_manager_new
++#define START gsd_subscription_manager_start
++#define STOP gsd_subscription_manager_stop
++#define MANAGER GsdSubscriptionManager
++#include "gsd-subscription-manager.h"
++
++#include "daemon-skeleton-gtk.h"
+diff --git a/plugins/subman/meson.build b/plugins/subman/meson.build
+new file mode 100644
+index 00000000..111b96da
+--- /dev/null
++++ b/plugins/subman/meson.build
+@@ -0,0 +1,56 @@
++sources = files(
++  'gsd-subscription-manager.c',
++  'gsd-subman-common.c',
++  'main.c'
++)
++
++deps = plugins_deps + [
++  libcommon_dep,
++  libnotify_dep,
++  gtk_dep,
++  jsonglib_dep,
++  m_dep,
++]
++
++cflags += ['-DBINDIR="@0@"'.format(gsd_bindir)]
++cflags += ['-DLIBEXECDIR="@0@"'.format(gsd_libexecdir)]
++
++executable(
++  'gsd-' + plugin_name,
++  sources,
++  include_directories: [top_inc, common_inc],
++  dependencies: deps,
++  c_args: cflags,
++  install: true,
++  install_rpath: gsd_pkglibdir,
++  install_dir: gsd_libexecdir
++)
++
++# .Register needs to be called from root as subman can't do PolicyKit...
++policy = 'org.gnome.settings-daemon.plugins.subman.policy'
++policy_in = configure_file(
++  input: policy + '.in.in',
++  output: policy + '.in',
++  configuration: plugins_conf
++)
++
++i18n.merge_file(
++  input: policy_in,
++  output: policy,
++  po_dir: po_dir,
++  install: true,
++  install_dir: join_paths(gsd_datadir, 'polkit-1', 'actions')
++)
++
++install_data('org.gnome.settings-daemon.plugins.subman.rules',
++             install_dir : join_paths(gsd_datadir, 'polkit-1', 'rules.d'))
++
++executable(
++  'gsd-subman-helper',
++  'gsd-subman-helper.c',
++  include_directories: top_inc,
++  dependencies: [gio_dep, gio_unix_dep, jsonglib_dep],
++  install: true,
++  install_rpath: gsd_pkglibdir,
++  install_dir: gsd_libexecdir
++)
+diff --git a/plugins/subman/org.gnome.SettingsDaemon.Subscription.desktop.in b/plugins/subman/org.gnome.SettingsDaemon.Subscription.desktop.in
+new file mode 100644
+index 00000000..14fe5915
+--- /dev/null
++++ b/plugins/subman/org.gnome.SettingsDaemon.Subscription.desktop.in
+@@ -0,0 +1,9 @@
++[Desktop Entry]
++Type=Application
++Name=GNOME Settings Daemon's subscription manager plugin
++Exec=@libexecdir@/gsd-subman
++OnlyShowIn=GNOME;
++NoDisplay=true
++X-GNOME-Autostart-Phase=Initialization
++X-GNOME-Autostart-Notify=true
++X-GNOME-AutoRestart=true
+diff --git a/plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in b/plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in
+new file mode 100644
+index 00000000..59e9fdd4
+--- /dev/null
++++ b/plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in
+@@ -0,0 +1,27 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE policyconfig PUBLIC
++ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
++ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
++<policyconfig>
++
++  <!--
++    Policy definitions for gnome-settings-daemon system-wide actions.
++    Copyright (c) 2019 Richard Hughes <richard@hughsie.com>
++  -->
++
++  <vendor>GNOME Settings Daemon</vendor>
++  <vendor_url>http://git.gnome.org/browse/gnome-settings-daemon</vendor_url>
++  <icon_name>emblem-synchronizing</icon_name>
++
++  <action id="org.gnome.settings-daemon.plugins.subman.register">
++    <description>Register the system</description>
++    <message>Authentication is required to register the system</message>
++    <defaults>
++      <allow_any>no</allow_any>
++      <allow_inactive>no</allow_inactive>
++      <allow_active>auth_admin_keep</allow_active>
++    </defaults>
++    <annotate key="org.freedesktop.policykit.exec.path">@libexecdir@/gsd-subman-helper</annotate>
++  </action>
++
++</policyconfig>
+diff --git a/plugins/subman/org.gnome.settings-daemon.plugins.subman.rules b/plugins/subman/org.gnome.settings-daemon.plugins.subman.rules
+new file mode 100644
+index 00000000..1ed3a0ea
+--- /dev/null
++++ b/plugins/subman/org.gnome.settings-daemon.plugins.subman.rules
+@@ -0,0 +1,7 @@
++polkit.addRule(function(action, subject) {
++    if (action.id == "org.gnome.settings-daemon.plugins.subman.register" &&
++        subject.active == true && subject.local == true &&
++        subject.isInGroup("wheel")) {
++            return polkit.Result.YES;
++    }
++});
+diff --git a/po/POTFILES.in b/po/POTFILES.in
+index 302d12f4..52b7674d 100644
+--- a/po/POTFILES.in
++++ b/po/POTFILES.in
+@@ -24,6 +24,8 @@ plugins/print-notifications/gsd-printer.c
+ plugins/print-notifications/gsd-print-notifications-manager.c
+ plugins/smartcard/gsd-smartcard-manager.c
+ plugins/smartcard/gsd-smartcard-service.c
++plugins/subman/gsd-subscription-manager.c
++plugins/subman/org.gnome.settings-daemon.plugins.subman.policy.in.in
+ plugins/usb-protection/gsd-usb-protection-manager.c
+ plugins/wacom/gsd-wacom-manager.c
+ plugins/wacom/org.gnome.settings-daemon.plugins.wacom.policy.in.in
+-- 
+2.48.1
+
