@@ -1,0 +1,65 @@
+From dfa3c4a2a12272b110fac942f96935846ef055e8 Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Tue, 28 Jan 2025 15:52:21 +0100
+Subject: [PATCH] build: Add "subman" conditional build option
+
+Related: RHEL-4092
+---
+ meson.build         | 7 ++++++-
+ meson_options.txt   | 2 ++
+ plugins/meson.build | 4 ++++
+ 3 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index 644ba060..ee3bfe85 100644
+--- a/meson.build
++++ b/meson.build
+@@ -104,7 +104,6 @@ libcanberra_gtk_dep = dependency('libcanberra-gtk3')
+ libgeoclue_dep = dependency('libgeoclue-2.0', version: '>= 2.3.1')
+ libnotify_dep = dependency('libnotify', version: '>= 0.7.3')
+ libpulse_mainloop_glib_dep = dependency('libpulse-mainloop-glib', version: '>= 2.0')
+-jsonglib_dep = dependency('json-glib-1.0', version: '>= 1.1.1')
+ pango_dep = dependency('pango', version: '>= 1.20.0')
+ polkit_gobject_dep = dependency('polkit-gobject-1', version: '>= 0.114')
+ upower_glib_dep = dependency('upower-glib', version: '>= 0.99.8')
+@@ -232,6 +231,12 @@ if enable_colord
+   colord_dep = dependency('colord', version: '>= 1.4.5')
+ endif
+ 
++# subman
++enable_subman = get_option('subman')
++if enable_subman
++  jsonglib_dep = dependency('json-glib-1.0', version: '>= 1.1.1')
++endif
++
+ gnome = import('gnome')
+ i18n = import('i18n')
+ pkg = import('pkgconfig')
+diff --git a/meson_options.txt b/meson_options.txt
+index 3e04cf64..7e6e3d58 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -12,3 +12,5 @@ option('usb-protection', type: 'boolean', value: true, description: 'build with
+ option('wayland', type: 'boolean', value: true, description: 'build with Wayland support')
+ option('wwan', type: 'boolean', value: true, description: 'build with WWAN support')
+ option('colord', type: 'boolean', value: true, description: 'build with colord support')
++
++option('subman', type: 'boolean', value: true, description: 'build with Red Hat subscription manager support')
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 59266c8d..22cdc847 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -53,6 +53,10 @@ if not enable_cups
+   disabled_plugins += ['print-notifications']
+ endif
+ 
++if not enable_subman
++  disabled_plugins += ['subman']
++endif
++
+ # Specify futher required units, 'before' or 'after' may be specified if ordering is needed
+ plugin_gate_units = {
+     'xsettings': [
+-- 
+2.34.1
+

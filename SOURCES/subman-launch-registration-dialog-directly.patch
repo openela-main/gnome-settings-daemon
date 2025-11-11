@@ -1,0 +1,31 @@
+From ae039526040319438367802194dc4f7ad5789855 Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Thu, 30 Jan 2025 17:50:40 +0100
+Subject: [PATCH] Launch subscription registration dialog directly from
+ notification
+
+In https://issues.redhat.com/browse/RHEL-4101, GNOME Settings will start
+handling `gnome-control-center info-overview subman-register` to launch
+the dialog directly.
+---
+ plugins/subman/gsd-subscription-manager.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+index 09a96a3a..e3b0565d 100644
+--- a/plugins/subman/gsd-subscription-manager.c
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -1082,8 +1082,8 @@ gsd_subscription_manager_class_init (GsdSubscriptionManagerClass *klass)
+ static void
+ _launch_info_overview (void)
+ {
+-	const gchar *argv[] = { "gnome-control-center", "info-overview", NULL };
+-	g_debug ("Running gnome-control-center info-overview");
++	const gchar *argv[] = { "gnome-control-center", "info-overview", "subman-register", NULL };
++	g_debug ("Running gnome-control-center info-overview subman-register");
+ 	g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH,
+ 		       NULL, NULL, NULL, NULL);
+ }
+-- 
+2.48.1
+

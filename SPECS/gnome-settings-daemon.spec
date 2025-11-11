@@ -15,7 +15,7 @@
 
 Name: gnome-settings-daemon
 Version: 40.0.1
-Release: 19%{?dist}.openela.0.1
+Release: 22%{?dist}.openela.0.1
 Summary: The daemon sharing settings from GNOME to GTK+/KDE applications
 
 License: GPLv2+
@@ -83,6 +83,15 @@ Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
 Patch00006: usb-protection-dont-crash-when-screensaver-service-unavailable.patch
 Patch00007: smartcard-hotplug.patch
 Patch00008: power-button-action-server.patch
+
+# https://issues.redhat.com/browse/RHEL-4101
+Patch00009: subman-launch-registration-dialog-directly.patch
+
+# https://issues.redhat.com/browse/RHEL-4092
+Patch00010: subman-build-option.patch
+
+# https://issues.redhat.com/browse/RHEL-11910
+Patch00011: housekeeping-disambiguate-mount-names-in-notifications.patch
 
 %description
 A daemon to share settings from GNOME to other applications. It also
@@ -210,8 +219,20 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
 %{_libdir}/pkgconfig/gnome-settings-daemon.pc
 
 %changelog
-* Tue May 13 2025 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
+* Tue Nov 11 2025 Release Engineering <releng@openela.org> - 40.0.1.openela.0.1
 - Remove all subman patches
+
+* Tue Mar 04 2025 Felipe Borges <feborges@redhat.com> - 40.0.1-22
+- Use mount path in "Low disk" notification when multiple mount points have same name
+  Related: RHEL-11910
+
+* Thu Feb 27 2025 Felipe Borges <feborges@redhat.com> - 40.0.1-21
+- Add build option to disable subman plugin
+  Related: RHEL-4092
+
+* Thu Jan 30 2025 Felipe Borges <feborges@redhat.com> - 40.0.1-20
+- Make "Register System" notification launch registration dialog directly
+  Related: RHEL-4101
 
 * Mon Jan 20 2025 Felipe Borges <feborges@redhat.com> - 40.0.1-19
 - Fix default power-button-action setting for servers
