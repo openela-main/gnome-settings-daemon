@@ -1,28 +1,27 @@
-From 52ae4e6ccfec26a40d9953e573e1a75d4e6d014f Mon Sep 17 00:00:00 2001
+From 440e45d14b7d86e3467024a2ec2c3750c1d9f3ca Mon Sep 17 00:00:00 2001
 From: Alex Burmashev <alexander.burmashev@oracle.com>
-Date: Tue, 13 May 2025 10:34:40 +0000
-Subject: [PATCH] OpenELA 9.6 debranding
+Date: Tue, 11 Nov 2025 12:03:18 +0000
+Subject: [PATCH] OpenELA 9.6 debranding update
 
-Signed-off-by: Alex Burmashev <alexander.burmashev@oracle.com>
 ---
  SPECS/gnome-settings-daemon.spec | 10 ++++++++++
  1 file changed, 10 insertions(+)
 
 diff --git a/SPECS/gnome-settings-daemon.spec b/SPECS/gnome-settings-daemon.spec
-index abe67aa..7631c91 100644
+index 9033846..4659d87 100644
 --- a/SPECS/gnome-settings-daemon.spec
 +++ b/SPECS/gnome-settings-daemon.spec
 @@ -9,6 +9,10 @@
- 
+
  %global tarball_version %%(echo %{version} | tr '~' '.')
- 
+
 +%if %{undefined openela}
 +%bcond_without subman
 +%endif
 +
  Name:           gnome-settings-daemon
  Version:        40.0.1
- Release:        19%{?dist}
+ Release:        22%{?dist}
 @@ -36,7 +40,9 @@ BuildRequires:  pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_sche
  BuildRequires:  pkgconfig(gtk+-3.0) >= %{gtk3_version}
  BuildRequires:  pkgconfig(gudev-1.0)
@@ -35,7 +34,7 @@ index abe67aa..7631c91 100644
  BuildRequires:  pkgconfig(libgeoclue-2.0)
 @@ -68,7 +74,9 @@ Requires: gtk3%{?_isa} >= %{gtk3_version}
  Requires: libgweather%{?_isa} >= %{libgweather_version}
- 
+
  Patch00001: 0001-power-Enable-power-saver-profile-when-low-on-battery.patch
 +%if %{with subman}
  Patch00002: subscription-manager-support.patch
@@ -43,10 +42,10 @@ index abe67aa..7631c91 100644
  Patch00003: im-module-setting-fix.patch
  Patch00004: print-notifications-clear-in-stop.patch
  Patch00005: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
-@@ -177,11 +185,13 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
+@@ -186,11 +194,13 @@ cp %{SOURCE1} $RPM_BUILD_ROOT%{_datadir}/glib-2.0/schemas
  %{_libexecdir}/gsd-wwan
  %{_datadir}/glib-2.0/schemas/org.gnome.settings-daemon.plugins.wwan.gschema.xml
- 
+
 +%if %{with subman}
  %{_sysconfdir}/xdg/autostart/org.gnome.SettingsDaemon.Subscription.desktop
  %{_libexecdir}/gsd-subman
@@ -54,9 +53,8 @@ index abe67aa..7631c91 100644
  %{_datadir}/polkit-1/actions/org.gnome.settings-daemon.plugins.subman.policy
  %{_datadir}/polkit-1/rules.d/org.gnome.settings-daemon.plugins.subman.rules
 +%endif
- 
+
  %dir %{_libdir}/gnome-settings-daemon-40
  %{_libdir}/gnome-settings-daemon-40/libgsd.so
--- 
-2.47.1
-
+--
+2.47.3
