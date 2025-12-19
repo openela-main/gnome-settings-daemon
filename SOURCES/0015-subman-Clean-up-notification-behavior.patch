@@ -1,7 +1,7 @@
-From 3412be1f63df2a5967ef92c27028368df1646b5c Mon Sep 17 00:00:00 2001
+From 969c237371637cb145ed6b0b2809a66d0f989da5 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 12:41:20 -0500
-Subject: [PATCH 15/15] subman: Clean up notification behavior
+Subject: [PATCH 15/16] subman: Clean up notification behavior
 
 Notifications were only displayed for some status transitions.
 
@@ -415,5 +415,5 @@ index 6d80bfa9..aaccbbc6 100644
  
  	/* registration required */
 -- 
-2.30.0
+2.41.0.rc2
 

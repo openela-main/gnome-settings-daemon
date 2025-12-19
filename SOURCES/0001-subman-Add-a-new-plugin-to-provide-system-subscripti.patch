@@ -1,12 +1,14 @@
-From bee6d42503ec9b56f6e10704db02bcedb6a4fdf1 Mon Sep 17 00:00:00 2001
+From 13f7bc5958dc4ae7139e195098e5fbee58455f43 Mon Sep 17 00:00:00 2001
 From: Richard Hughes <rhughes@redhat.com>
 Date: Thu, 20 Aug 2020 11:16:09 -0400
-Subject: [PATCH 01/15] subman: Add a new plugin to provide system subscription
+Subject: [PATCH 01/16] subman: Add a new plugin to provide system subscription
  registration
 
 ---
- meson.build                                   |   1 +
- plugins/meson.build                           |   1 +
+ meson.build                                   |   6 +
+ meson_options.txt                             |   1 +
+ plugins/dummy/meson.build                     |   4 +
+ plugins/meson.build                           |   4 +
  plugins/subman/README.md                      |  56 +
  plugins/subman/gsd-subman-common.c            |  36 +
  plugins/subman/gsd-subman-common.h            |  40 +
@@ -18,7 +20,7 @@ Subject: [PATCH 01/15] subman: Add a new plugin to provide system subscription
  ...ome.SettingsDaemon.Subscription.desktop.in |   9 +
  ...ettings-daemon.plugins.subman.policy.in.in |  27 +
  ...gnome.settings-daemon.plugins.subman.rules |   7 +
- 13 files changed, 1664 insertions(+)
+ 15 files changed, 1677 insertions(+)
  create mode 100644 plugins/subman/README.md
  create mode 100644 plugins/subman/gsd-subman-common.c
  create mode 100644 plugins/subman/gsd-subman-common.h
@@ -32,62 +34,10 @@ Subject: [PATCH 01/15] subman: Add a new plugin to provide system subscription
  create mode 100644 plugins/subman/org.gnome.settings-daemon.plugins.subman.rules
 
 diff --git a/meson.build b/meson.build
-index 1632ea05..27bf8c4c 100644
+index 1632ea05..7a0be003 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -70,60 +70,61 @@ if gsd_buildtype.contains('debug')
-   ]
- 
-   compiler_flags = cc.get_supported_arguments(test_cflags)
- elif gsd_buildtype.contains('release')
-   common_flags += ['-DG_DISABLE_CAST_CHECKS']
- endif
- 
- # Workaround for meson's bug
- # https://github.com/mesonbuild/meson/pull/1896
- if get_option('b_ndebug') == true
-   common_flags += ['-DG_DISABLE_ASSERT']
- endif
- 
- add_project_arguments(common_flags + compiler_flags, language: 'c')
- 
- glib_dep = dependency('glib-2.0', version: '>= 2.56')
- colord_dep = dependency('colord', version: '>= 1.0.2')
- geocode_glib_dep = dependency('geocode-glib-1.0', version: '>= 3.10.0')
- gio_dep = dependency('gio-2.0', version: '>= 2.53.0')
- gio_unix_dep = dependency('gio-unix-2.0')
- gnome_desktop_dep = dependency('gnome-desktop-3.0', version: '>= 3.11.1')
- gsettings_desktop_dep = dependency('gsettings-desktop-schemas', version: '>= 3.27.90')
- gtk_dep = dependency('gtk+-3.0', version: '>= 3.15.3')
- gtk_x11_dep = dependency('gtk+-x11-3.0')
- gweather_dep = dependency('gweather-3.0', version: '>= 3.9.5')
- lcms_dep = dependency('lcms2', version: '>= 2.2')
- libcanberra_gtk_dep = dependency('libcanberra-gtk3')
- libgeoclue_dep = dependency('libgeoclue-2.0', version: '>= 2.3.1')
- libnotify_dep = dependency('libnotify', version: '>= 0.7.3')
- libpulse_mainloop_glib_dep = dependency('libpulse-mainloop-glib', version: '>= 2.0')
-+jsonglib_dep = dependency('json-glib-1.0', version: '>= 1.1.1')
- pango_dep = dependency('pango', version: '>= 1.20.0')
- polkit_gobject_dep = dependency('polkit-gobject-1', version: '>= 0.103')
- upower_glib_dep = dependency('upower-glib', version: '>= 0.99.0')
- x11_dep = dependency('x11')
- 
- m_dep = cc.find_library('m')
- dl_dep = cc.find_library('dl')
- 
- # ALSA integration (default enabled)
- enable_alsa = get_option('alsa')
- assert(enable_alsa or not host_is_linux, 'ALSA is not optional on Linux platforms')
- 
- libgvc = subproject(
-   'gvc',
-   default_options: [
-     'static=true',
-     'alsa=' + enable_alsa.to_string()
-   ]
- )
- libgvc_dep = libgvc.get_variable('libgvc_dep')
- 
+@@ -121,60 +121,66 @@ libgvc_dep = libgvc.get_variable('libgvc_dep')
  # GUdev integration (default enabled)
  enable_gudev = get_option('gudev')
  if enable_gudev
@@ -97,17 +47,129 @@ index 1632ea05..27bf8c4c 100644
  if host_is_linux
    assert(enable_gudev, 'GUdev is not optional on Linux platforms')
  endif
+ 
+ has_timerfd_create = cc.has_function('timerfd_create')
+ config_h.set10('HAVE_TIMERFD', has_timerfd_create)
+ 
+ # Check for wayland dependencies
+ enable_wayland = get_option('wayland')
+ if enable_wayland
+   assert(enable_gudev, 'GUDev support is required for wayland support.')
+   wayland_client_dep = dependency('wayland-client')
+   wayland_gdk_dep = dependency('gdk-wayland-3.0')
+ endif
+ config_h.set10('HAVE_WAYLAND', enable_wayland)
+ 
+ # wacom (disabled for s390/s390x and non Linux platforms)
+ enable_wacom = host_is_linux_not_s390
+ if enable_wacom
+   assert(enable_gudev, 'GUDev support is required for wacom support.')
+   libwacom_dep = dependency('libwacom', version: '>= 0.7')
+ endif
+ config_h.set10('HAVE_WACOM', enable_wacom)
+ 
++# subscription manager section
++enable_subman = get_option('subscription_manager')
++if enable_subman
++  jsonglib_dep = dependency('json-glib-1.0', version: '>= 1.1.1')
++endif
++
+ # smartcard section
+ enable_smartcard = get_option('smartcard')
+ if enable_smartcard
+   nss_dep = dependency('nss', version: '>= 3.11.2')
+ 
+   system_nssdb_dir = get_option('nssdb_dir')
+   if system_nssdb_dir == ''
+     system_nssdb_dir = join_paths(gsd_sysconfdir, 'pki', 'nssdb')
+   endif
+ endif
+ 
+ # CUPS
+ enable_cups = get_option('cups')
+ if enable_cups
+   cups_dep = dependency('cups', version : '>= 1.4', required: false)
+   assert(cups_dep.found(), 'CUPS 1.4 or newer not found')
+ 
+   # FIXME: 1.6 cflags generate a lot of errors
+   '''
+   cups_cflags = []
+   if cups_dep.version().version_compare('>= 1.6')
+     cups_cflags += '-D_PPD_DEPRECATED=""'
+   endif
+ 
+   cups_dep = declare_dependency(
+     dependencies: cups_dep,
+     compile_args: cups_cflags
+   )
+   '''
+ endif
+diff --git a/meson_options.txt b/meson_options.txt
+index 50bd1749..4327e07b 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -1,10 +1,11 @@
+ option('nssdb_dir', type: 'string', value: '', description: 'Absolute path to the system NSS database directory')
+ option('udev_dir', type: 'string', value: '', description: 'Absolute path of the udev base directory')
+ 
+ option('alsa', type: 'boolean', value: true, description: 'build with ALSA support (not optional on Linux platforms)')
+ option('gudev', type: 'boolean', value: true, description: 'build with gudev device support (not optional on Linux platforms)')
+ option('cups', type: 'boolean', value: true, description: 'build with CUPS support')
+ option('network_manager', type: 'boolean', value: true, description: 'build with NetworkManager support (not optional on Linux platforms)')
+ option('rfkill', type: 'boolean', value: true, description: 'build with rfkill support (not optional on Linux platforms)')
++option('subscription_manager', type: 'boolean', value: true, description: 'build with subscription-manager support')
+ option('smartcard', type: 'boolean', value: true, description: 'build with smartcard support')
+ option('wayland', type: 'boolean', value: true, description: 'build with Wayland support')
+diff --git a/plugins/dummy/meson.build b/plugins/dummy/meson.build
+index f563efa6..96105061 100644
+--- a/plugins/dummy/meson.build
++++ b/plugins/dummy/meson.build
+@@ -1,31 +1,35 @@
+ desktops = []
++if not enable_subman
++  desktops += ['org.gnome.SettingsDaemon.Subscription']
++endif
++
+ if not enable_smartcard
+   desktops += ['org.gnome.SettingsDaemon.Smartcard']
+ endif
+ 
+ if not enable_cups
+   desktops += ['org.gnome.SettingsDaemon.PrintNotifications']
+ endif
+ 
+ if not enable_rfkill
+   desktops += ['org.gnome.SettingsDaemon.Rfkill']
+ endif
+ 
+ if not enable_wacom
+   desktops += ['org.gnome.SettingsDaemon.Wacom']
+ endif
+ 
+ foreach desktop: desktops
+   dummy_conf = configuration_data()
+   dummy_conf.set('libexecdir', gsd_libexecdir)
+   dummy_conf.set('pluginname', desktop)
+ 
+   configure_file(
+     input: 'org.gnome.SettingsDaemon.Dummy.desktop.in',
+     output: desktop + '.desktop',
+     configuration: dummy_conf,
+     install: true,
+     install_dir: gsd_xdg_autostart
+   )
+ endforeach
+ 
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 3c4d42ac..4c9caf47 100644
+index 3c4d42ac..4fe46b68 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -1,35 +1,36 @@
+@@ -1,48 +1,52 @@
  enabled_plugins = [
    ['a11y-settings', 'A11ySettings'],
    ['account', 'Account'],
    ['clipboard', 'Clipboard'],
    ['color', 'Color'],
-+  ['subman', 'Subscription'],
    ['datetime', 'Datetime'],
    ['dummy', ''],
    ['power', 'Power'],
@@ -121,6 +183,10 @@ index 3c4d42ac..4c9caf47 100644
    ['xsettings', 'XSettings']
  ]
  
++if enable_subman
++  enabled_plugins += [['subman', 'Subscription']]
++endif
++
  if enable_smartcard
    enabled_plugins += [['smartcard', 'Smartcard']]
  endif
@@ -138,6 +204,19 @@ index 3c4d42ac..4c9caf47 100644
  endif
  
  plugins_conf = configuration_data()
+ plugins_conf.set('libexecdir', gsd_libexecdir)
+ 
+ plugins_deps = [libgsd_dep]
+ 
+ plugins_cflags = ['-DGNOME_SETTINGS_LOCALEDIR="@0@"'.format(gsd_localedir)]
+ 
+ foreach plugin: [['common', '']] + enabled_plugins
+   plugin_name = plugin[0]
+ 
+   cflags = [
+     '-DG_LOG_DOMAIN="@0@-plugin"'.format(plugin_name),
+     '-DPLUGIN_NAME="@0@"'.format(plugin_name),
+   ] + plugins_cflags
 diff --git a/plugins/subman/README.md b/plugins/subman/README.md
 new file mode 100644
 index 00000000..3e1cc3cd
@@ -1867,5 +1946,5 @@ index 00000000..1ed3a0ea
 +    }
 +});
 -- 
-2.30.0
+2.41.0.rc2
 

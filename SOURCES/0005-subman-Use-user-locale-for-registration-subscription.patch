@@ -1,7 +1,7 @@
-From db73e2211ecc746434d78d23d801c92581fa8824 Mon Sep 17 00:00:00 2001
+From a402ecd483fe115dbc063c40c9b13a2298ed7129 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 15:04:17 -0500
-Subject: [PATCH 05/15] subman: Use user locale for registration/subscription
+Subject: [PATCH 05/16] subman: Use user locale for registration/subscription
  operations
 
 This makes sure that error messages are in the correct locale.
@@ -369,5 +369,5 @@ index af7a82e9..f84e91bf 100644
  	/* wait for rhsmd to notice the new config */
  	g_usleep (G_USEC_PER_SEC * 5);
 -- 
-2.30.0
+2.41.0.rc2
 

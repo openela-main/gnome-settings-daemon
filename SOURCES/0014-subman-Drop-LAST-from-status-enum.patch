@@ -1,7 +1,7 @@
-From a78b25b9507edb958a46779f2bb808bf678fa4a7 Mon Sep 17 00:00:00 2001
+From e5cdbb2aa6f0920343f73818f4f34d13586c72b1 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:55:19 -0500
-Subject: [PATCH 14/15] subman: Drop "LAST" from status enum
+Subject: [PATCH 14/16] subman: Drop "LAST" from status enum
 
 It's unused, so get rid of it.
 ---
@@ -52,5 +52,5 @@ index f8a3d9f4..88226564 100644
  
  #endif /* __GSD_SUBMAN_COMMON_H */
 -- 
-2.30.0
+2.41.0.rc2
 

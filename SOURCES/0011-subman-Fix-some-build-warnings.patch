@@ -1,7 +1,7 @@
-From 432850e943d72daedb1d352a0332d3fdee6078e2 Mon Sep 17 00:00:00 2001
+From 19afd73e02b2dda3b620c7d018dd4057d8837851 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:26:40 -0500
-Subject: [PATCH 11/15] subman: Fix some build warnings
+Subject: [PATCH 11/16] subman: Fix some build warnings
 
 ---
  plugins/subman/gsd-subscription-manager.c | 8 ++++----
@@ -142,5 +142,5 @@ index 46f8d35c..1f9ca447 100644
  	}
  	if (!_client_subprocess_wait_check (subprocess, error))
 -- 
-2.30.0
+2.41.0.rc2
 

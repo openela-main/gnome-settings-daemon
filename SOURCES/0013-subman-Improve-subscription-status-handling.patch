@@ -1,7 +1,7 @@
-From d9eb6331efa92cd28a8ba3ccc1665c3744296465 Mon Sep 17 00:00:00 2001
+From b966b05321cac8c7765d00d0ae6fa8b645e0f828 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:34:03 -0500
-Subject: [PATCH 13/15] subman: Improve subscription status handling
+Subject: [PATCH 13/16] subman: Improve subscription status handling
 
 This commit improves how subscription-manager status is
 parsed to give more detailed information about subscription
@@ -137,5 +137,5 @@ index 705f8b11..6d80bfa9 100644
  	if (!json_parser_load_from_data (json_parser, json_txt, -1, error))
  		return FALSE;
 -- 
-2.30.0
+2.41.0.rc2
 

@@ -1,0 +1,43 @@
+From fa5d80e5492370224864173cc052cd3d57698ac7 Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Mon, 3 Nov 2025 14:32:30 +0100
+Subject: [PATCH] subman: Set notification icon
+
+---
+ plugins/subman/gsd-subscription-manager.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/subman/gsd-subscription-manager.c b/plugins/subman/gsd-subscription-manager.c
+index aaccbbc6..7ba45feb 100644
+--- a/plugins/subman/gsd-subscription-manager.c
++++ b/plugins/subman/gsd-subscription-manager.c
+@@ -1043,7 +1043,7 @@ gsd_subscription_manager_init (GsdSubscriptionManager *manager)
+ 	priv->notification_expired =
+ 		notify_notification_new (_("Subscription Has Expired"),
+ 					 _("Add or renew a subscription to continue receiving software updates."),
+-					 NULL);
++					 "preferences-system");
+ 	notify_notification_set_app_name (priv->notification_expired, _("Subscription"));
+ 	notify_notification_set_hint_string (priv->notification_expired, "desktop-entry", "subman-panel");
+ 	notify_notification_set_hint_string (priv->notification_expired, "x-gnome-privacy-scope", "system");
+@@ -1059,7 +1059,7 @@ gsd_subscription_manager_init (GsdSubscriptionManager *manager)
+ 	priv->notification_registered =
+ 		notify_notification_new (_("Registration Successful"),
+ 					 _("The system has been registered and software updates have been enabled."),
+-					 NULL);
++					 "preferences-system");
+ 	notify_notification_set_app_name (priv->notification_registered, _("Subscription"));
+ 	notify_notification_set_hint_string (priv->notification_registered, "desktop-entry", "subman-panel");
+ 	notify_notification_set_hint_string (priv->notification_registered, "x-gnome-privacy-scope", "system");
+@@ -1071,7 +1071,7 @@ gsd_subscription_manager_init (GsdSubscriptionManager *manager)
+ 	priv->notification_registration_required =
+ 		notify_notification_new (_("System Not Registered"),
+ 					 _("Please register your system to receive software updates."),
+-					 NULL);
++					 "preferences-system");
+ 	notify_notification_set_app_name (priv->notification_registration_required, _("Subscription"));
+ 	notify_notification_set_hint_string (priv->notification_registration_required, "desktop-entry", "subman-panel");
+ 	notify_notification_set_hint_string (priv->notification_registration_required, "x-gnome-privacy-scope", "system");
+-- 
+2.51.0
+

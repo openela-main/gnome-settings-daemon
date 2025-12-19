@@ -10,53 +10,53 @@
 %bcond_without subman
 %endif
 
-Name: gnome-settings-daemon
-Version: 3.32.0
-Release: 19%{?dist}.openela.0.1
-Summary: The daemon sharing settings from GNOME to GTK+/KDE applications
+Name:           gnome-settings-daemon
+Version:        3.32.0
+Release:        21%{?dist}
+Summary:        The daemon sharing settings from GNOME to GTK+/KDE applications
 
-License: GPLv2+
-URL: https://download.gnome.org/sources/%{name}
-Source0: https://download.gnome.org/sources/%{name}/3.32/%{name}-%{version}.tar.xz
-Source1: org.gnome.settings-daemon.plugins.power.gschema.override
+License:        GPLv2+
+URL:            https://download.gnome.org/sources/%{name}
+Source0:        https://download.gnome.org/sources/%{name}/3.32/%{name}-%{version}.tar.xz
+Source1:        org.gnome.settings-daemon.plugins.power.gschema.override
 
-BuildRequires: meson >= 0.44.0
-BuildRequires: gcc
-BuildRequires: cups-devel
-BuildRequires: gettext
-BuildRequires: perl-interpreter
-BuildRequires: git
-BuildRequires: pkgconfig(alsa)
-BuildRequires: pkgconfig(colord) >= 1.0.2
-BuildRequires: pkgconfig(fontconfig)
-BuildRequires: pkgconfig(geoclue-2.0) >= %{geoclue_version}
-BuildRequires: pkgconfig(geocode-glib-1.0) >= %{geocode_glib_version}
-BuildRequires: pkgconfig(glib-2.0) >= %{glib2_version}
-BuildRequires: pkgconfig(gnome-desktop-3.0) >= %{gnome_desktop_version}
-BuildRequires: pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_schemas_version}
-BuildRequires: pkgconfig(gtk+-3.0) >= %{gtk3_version}
-BuildRequires: pkgconfig(gudev-1.0)
-BuildRequires: pkgconfig(gweather-3.0) >= %{libgweather_version}
+BuildRequires:  meson >= 0.44.0
+BuildRequires:  gcc
+BuildRequires:  cups-devel
+BuildRequires:  gettext
+BuildRequires:  perl-interpreter
+BuildRequires:  git
+BuildRequires:  pkgconfig(alsa)
+BuildRequires:  pkgconfig(colord) >= 1.0.2
+BuildRequires:  pkgconfig(fontconfig)
+BuildRequires:  pkgconfig(geoclue-2.0) >= %{geoclue_version}
+BuildRequires:  pkgconfig(geocode-glib-1.0) >= %{geocode_glib_version}
+BuildRequires:  pkgconfig(glib-2.0) >= %{glib2_version}
+BuildRequires:  pkgconfig(gnome-desktop-3.0) >= %{gnome_desktop_version}
+BuildRequires:  pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_schemas_version}
+BuildRequires:  pkgconfig(gtk+-3.0) >= %{gtk3_version}
+BuildRequires:  pkgconfig(gudev-1.0)
+BuildRequires:  pkgconfig(gweather-3.0) >= %{libgweather_version}
 %if %{with subman}
-BuildRequires: pkgconfig(json-glib-1.0)
+BuildRequires:  pkgconfig(json-glib-1.0)
 %endif
-BuildRequires: pkgconfig(lcms2) >= 2.2
-BuildRequires: pkgconfig(libcanberra-gtk3)
-BuildRequires: pkgconfig(libgeoclue-2.0)
-BuildRequires: pkgconfig(libnm)
-BuildRequires: pkgconfig(libnotify)
-BuildRequires: pkgconfig(libpulse)
-BuildRequires: pkgconfig(libpulse-mainloop-glib)
-BuildRequires: pkgconfig(librsvg-2.0)
-BuildRequires: pkgconfig(nss)
-BuildRequires: pkgconfig(polkit-gobject-1)
-BuildRequires: pkgconfig(upower-glib)
-BuildRequires: pkgconfig(x11)
-BuildRequires: pkgconfig(xi)
-BuildRequires: pkgconfig(wayland-client)
+BuildRequires:  pkgconfig(lcms2) >= 2.2
+BuildRequires:  pkgconfig(libcanberra-gtk3)
+BuildRequires:  pkgconfig(libgeoclue-2.0)
+BuildRequires:  pkgconfig(libnm)
+BuildRequires:  pkgconfig(libnotify)
+BuildRequires:  pkgconfig(libpulse)
+BuildRequires:  pkgconfig(libpulse-mainloop-glib)
+BuildRequires:  pkgconfig(librsvg-2.0)
+BuildRequires:  pkgconfig(nss)
+BuildRequires:  pkgconfig(polkit-gobject-1)
+BuildRequires:  pkgconfig(upower-glib)
+BuildRequires:  pkgconfig(x11)
+BuildRequires:  pkgconfig(xi)
+BuildRequires:  pkgconfig(wayland-client)
 %ifnarch s390 s390x
-BuildRequires: pkgconfig(libwacom) >= 0.7
-BuildRequires: pkgconfig(xorg-wacom)
+BuildRequires:  pkgconfig(libwacom) >= 0.7
+BuildRequires:  pkgconfig(xorg-wacom)
 %endif
 
 Requires: colord
@@ -89,7 +89,11 @@ Patch00002: 0002-account-reshow-the-notification-when-screen-unlocks.patch
 Patch00003: 0003-account-display-nag-screen-periodically.patch
 Patch00004: 0004-account-don-t-poll-more-frequently-than-notification.patch
 
+# https://bugzilla.redhat.com/show_bug.cgi?id=1796190
 Patch10001: 0001-smartcard-Cancel-cancellable-when-stopping.patch
+Patch10002: 0002-smartcard-Change-manager-to-non-blocking.patch
+Patch10003: 0003-smartcard-Change-timeout-on-spurious-event-error.patch
+Patch10004: 0004-smartcard-check-for-the-addition-of-new-smartcard-re.patch
 
 Patch20001: 0001-xsettings-Add-an-entry-for-the-overlay-scrolling-set.patch
 
@@ -116,7 +120,10 @@ Patch50013: 0013-subman-Improve-subscription-status-handling.patch
 Patch50014: 0014-subman-Drop-LAST-from-status-enum.patch
 Patch50015: 0015-subman-Clean-up-notification-behavior.patch
 Patch50016: 0016-subman-Update-POTFILES.in.patch
+# https://issues.redhat.com/browse/RHEL-5074
+Patch50018: subman-set-notification-icon.patch
 %endif
+
 # https://bugzilla.redhat.com/show_bug.cgi?id=1876291
 Patch50017: 0017-Update-translations.patch
 
@@ -134,8 +141,8 @@ A daemon to share settings from GNOME to other applications. It also
 handles global keybindings, as well as a number of desktop-wide settings.
 
 %package        devel
-Summary: Development files for %{name}
-Requires: %{name}%{?_isa} = %{version}-%{release}
+Summary:        Development files for %{name}
+Requires:       %{name}%{?_isa} = %{version}-%{release}
 
 %description    devel
 The %{name}-devel package contains libraries and header files for
@@ -145,7 +152,14 @@ developing applications that use %{name}.
 %autosetup -S git
 
 %build
-%meson
+%meson \
+%if %{with subman}
+    -Dsubscription_manager=true
+%else
+    -Dsubscription_manager=false
+%endif
+
+
 %meson_build
 
 %install
@@ -261,8 +275,16 @@ mkdir $RPM_BUILD_ROOT%{_libdir}/gnome-settings-daemon-3.0/gtk-modules
 %{_libdir}/pkgconfig/gnome-settings-daemon.pc
 
 %changelog
-* Thu Jan 25 2024 Release Engineering <releng@openela.org> - 3.32.0.openela.0.1
-- Remove all subman patches
+* Mon Nov 03 2025 Felipe Borges <feborges@redhat.com> - 3.32.0-21
+- Add icon to subman notifications
+  Resolves: RHEL-5074
+
+* Mon Jul 24 2023 Ray Strode <rstrode@redhat.com> - 3.32.0-20
+- Backport some upstream smartcard changes that make it work
+  better with p11-kit
+  Resolves: #1796190
+- Rework how subscription-manager plugin is conditionalized so
+  it doens't get built on centos 8 stream
 
 * Fri Feb 17 2023 Felipe Borges <feborges@redhat.com> - 4.32.0-19
 - Make power-button-action default to poweroff on servers
@@ -1217,7 +1239,7 @@ mkdir $RPM_BUILD_ROOT%{_libdir}/gnome-settings-daemon-3.0/gtk-modules
 
 * Fri May 08 2009 Bastien Nocera <bnocera@redhat.com> 2.26.1-4
 - Remove useless patch, see:
-http: //bugzilla.gnome.org/show_bug.cgi?id=580761 for details
+http://bugzilla.gnome.org/show_bug.cgi?id=580761 for details
 
 * Wed Apr 29 2009 Bastien Nocera <bnocera@redhat.com> 2.26.1-3
 - Don't set touchpads to be left-handed, otherwise the tap

@@ -1,7 +1,7 @@
-From 3bb3b2b09d34deafadd3cfe3355137afab20cb23 Mon Sep 17 00:00:00 2001
+From 3c7d01aae041fb3973d035018a3ec6d4de2328af Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:27:42 -0500
-Subject: [PATCH 12/15] subman: Add DBus API to subscribe for updates on
+Subject: [PATCH 12/16] subman: Add DBus API to subscribe for updates on
  already registered system
 
 It's possible an admin may have registered their system without
@@ -255,5 +255,5 @@ index 1f9ca447..705f8b11 100644
  	g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
  		     "Failed to get property: %s", property_name);
 -- 
-2.30.0
+2.41.0.rc2
 

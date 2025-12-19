@@ -1,0 +1,83 @@
+From 5da276e4559d5c3b072a9870db6d78a1fe788339 Mon Sep 17 00:00:00 2001
+From: Jack Massey <jacknmassey@gmail.com>
+Date: Tue, 17 Sep 2019 09:39:59 +1000
+Subject: [PATCH 3/4] smartcard: Change timeout on spurious event error
+
+The 0.5s timeout was probably based on the fact that the
+SECMOD_WaitForAnyTokenEvent call was blocking, it doesn't make sense to
+have the timeout on the error case less than the timeout on the normal
+case.
+---
+ plugins/smartcard/gsd-smartcard-manager.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
+index 77650643..a29df3e0 100644
+--- a/plugins/smartcard/gsd-smartcard-manager.c
++++ b/plugins/smartcard/gsd-smartcard-manager.c
+@@ -209,61 +209,61 @@ watch_one_event_from_driver (GsdSmartcardManager       *self,
+                 return FALSE;
+         }
+ 
+         if (card == NULL) {
+                 int error_code;
+ 
+                 error_code = PORT_GetError ();
+ 
+                 if (error_code == SEC_ERROR_NO_EVENT) {
+                     g_usleep (1 * G_USEC_PER_SEC);
+ 
+                     return TRUE;
+                 }
+ 
+                 operation->number_of_consecutive_errors++;
+                 if (operation->number_of_consecutive_errors > 10) {
+                      g_warning ("Got %d consecutive smartcard errors, so giving up.",
+                                 operation->number_of_consecutive_errors);
+ 
+                      g_set_error (error,
+                                   GSD_SMARTCARD_MANAGER_ERROR,
+                                   GSD_SMARTCARD_MANAGER_ERROR_WITH_NSS,
+                                   "encountered unexpected error while "
+                                   "waiting for smartcard events (error %x)",
+                                   error_code);
+                      return FALSE;
+                 }
+ 
+                 g_warning ("Got potentially spurious smartcard event error: %x.", error_code);
+ 
+-                g_usleep (0.5 * G_USEC_PER_SEC);
++                g_usleep (1 * G_USEC_PER_SEC);
+                 return TRUE;
+         }
+         operation->number_of_consecutive_errors = 0;
+ 
+         slot_id = PK11_GetSlotID (card);
+         slot_series = PK11_GetSlotSeries (card);
+ 
+         old_card = g_hash_table_lookup (operation->smartcards, GINT_TO_POINTER ((int) slot_id));
+ 
+         /* If there is a different card in the slot now than
+          * there was before, then we need to emit a removed signal
+          * for the old card
+          */
+         if (old_card != NULL) {
+                 old_slot_series = PK11_GetSlotSeries (old_card);
+ 
+                 if (old_slot_series != slot_series) {
+                         /* Card registered with slot previously is
+                          * different than this card, so update its
+                          * exported state to track the implicit missed
+                          * removal
+                          */
+                         gsd_smartcard_service_sync_token (priv->service, old_card, cancellable);
+                 }
+ 
+                 g_hash_table_remove (operation->smartcards, GINT_TO_POINTER ((int) slot_id));
+         }
+ 
+         if (PK11_IsPresent (card)) {
+                 g_debug ("Detected smartcard insertion event in slot %d", (int) slot_id);
+-- 
+2.39.2
+

@@ -1,7 +1,7 @@
-From d53c27802c69773d63d108f57912035fd3caabf9 Mon Sep 17 00:00:00 2001
+From 61fc2eed5ae1d0dd922fb4106338a54d7f6731d3 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Sun, 24 Jan 2021 11:24:36 -0500
-Subject: [PATCH 10/15] subman: Add new no-installed-products state
+Subject: [PATCH 10/16] subman: Add new no-installed-products state
 
 It's possible, though unlikley, the system has
 no packages installed from Red Hat supported package sets.
@@ -423,5 +423,5 @@ index 0838d490..46f8d35c 100644
  {
  	GObjectClass *object_class = G_OBJECT_CLASS (klass);
 -- 
-2.30.0
+2.41.0.rc2
 

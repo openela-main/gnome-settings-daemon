@@ -1,0 +1,124 @@
+From 65d854c690cad1ccef6544a8c571bbb723ff9be0 Mon Sep 17 00:00:00 2001
+From: Jack Massey <jacknmassey@gmail.com>
+Date: Tue, 17 Sep 2019 09:39:56 +1000
+Subject: [PATCH 2/4] smartcard: Change manager to non-blocking
+
+NSS's SECMOND_WaitForAnyTokenEvent uses the pkcs11 C_WaitForSlotEvent,
+and by default NSS will use p11-kit, at least on Fedora and Ubuntu.
+p11-kit doesn't support the blocking call for C_WaitForSlotEvent so NSS
+falls back to a polling simulation of the C_WaitForSlotEvent. This
+causes the LED on the smartcard to blink constantly as the card is
+polled.
+
+If we instead use the non-blocking version of the call, which p11-kit
+supports, NSS doesn't poll the card. The downside of this is that the
+application will wake up every second to check for events even if there
+hasn't been any, plus the fact that there could be up to a second delay
+between the event and it being picked up by gsd-smartcard. However, NSS
+is polling anyway so this is consistent with existing behaviour.
+
+The reason a one second delay was chosen was because this is what was
+currently used in NSS. nss/lib/dev/devslot.c:17
+
+    /* measured in seconds */
+    #define NSSSLOT_TOKEN_DELAY_TIME 1
+---
+ plugins/smartcard/gsd-smartcard-manager.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
+index 09ccecc0..77650643 100644
+--- a/plugins/smartcard/gsd-smartcard-manager.c
++++ b/plugins/smartcard/gsd-smartcard-manager.c
+@@ -167,75 +167,86 @@ typedef struct
+ {
+         SECMODModule *driver;
+         GHashTable *smartcards;
+         int number_of_consecutive_errors;
+ } WatchSmartcardsOperation;
+ 
+ static void
+ on_watch_cancelled (GCancellable             *cancellable,
+                     WatchSmartcardsOperation *operation)
+ {
+         SECMOD_CancelWait (operation->driver);
+ }
+ 
+ static gboolean
+ watch_one_event_from_driver (GsdSmartcardManager       *self,
+                              WatchSmartcardsOperation  *operation,
+                              GCancellable              *cancellable,
+                              GError                   **error)
+ {
+         GsdSmartcardManagerPrivate *priv = self->priv;
+         PK11SlotInfo *card = NULL, *old_card;
+         CK_SLOT_ID slot_id;
+         gulong handler_id;
+         int old_slot_series = -1, slot_series;
+ 
+         handler_id = g_cancellable_connect (cancellable,
+                                             G_CALLBACK (on_watch_cancelled),
+                                             operation,
+                                             NULL);
+ 
+-        if (handler_id != 0)
+-                card = SECMOD_WaitForAnyTokenEvent (operation->driver, 0, PR_SecondsToInterval (1));
++        if (handler_id != 0) {
++                /* Use the non-blocking version of the call as p11-kit, which
++                 * is used on both Fedora and Ubuntu, doesn't support the
++                 * blocking version of the call.
++                 */
++                card = SECMOD_WaitForAnyTokenEvent (operation->driver, CKF_DONT_BLOCK, PR_SecondsToInterval (1));
++        }
+ 
+         g_cancellable_disconnect (cancellable, handler_id);
+ 
+         if (g_cancellable_set_error_if_cancelled (cancellable, error)) {
+                 g_warning ("smartcard event function cancelled");
+                 return FALSE;
+         }
+ 
+         if (card == NULL) {
+                 int error_code;
+ 
+                 error_code = PORT_GetError ();
+ 
++                if (error_code == SEC_ERROR_NO_EVENT) {
++                    g_usleep (1 * G_USEC_PER_SEC);
++
++                    return TRUE;
++                }
++
+                 operation->number_of_consecutive_errors++;
+                 if (operation->number_of_consecutive_errors > 10) {
+                      g_warning ("Got %d consecutive smartcard errors, so giving up.",
+                                 operation->number_of_consecutive_errors);
+ 
+                      g_set_error (error,
+                                   GSD_SMARTCARD_MANAGER_ERROR,
+                                   GSD_SMARTCARD_MANAGER_ERROR_WITH_NSS,
+                                   "encountered unexpected error while "
+                                   "waiting for smartcard events (error %x)",
+                                   error_code);
+                      return FALSE;
+                 }
+ 
+                 g_warning ("Got potentially spurious smartcard event error: %x.", error_code);
+ 
+                 g_usleep (0.5 * G_USEC_PER_SEC);
+                 return TRUE;
+         }
+         operation->number_of_consecutive_errors = 0;
+ 
+         slot_id = PK11_GetSlotID (card);
+         slot_series = PK11_GetSlotSeries (card);
+ 
+         old_card = g_hash_table_lookup (operation->smartcards, GINT_TO_POINTER ((int) slot_id));
+ 
+         /* If there is a different card in the slot now than
+          * there was before, then we need to emit a removed signal
+          * for the old card
+          */
+-- 
+2.39.2
+

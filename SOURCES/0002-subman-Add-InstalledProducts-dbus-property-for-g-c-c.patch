@@ -1,7 +1,7 @@
-From f723ed1078e050c4d966d40b2aea74970c74279c Mon Sep 17 00:00:00 2001
+From 72cb524e415e47764bac0e770c303146a507bd0c Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Thu, 27 Jun 2019 16:12:00 +0200
-Subject: [PATCH 02/15] subman: Add InstalledProducts dbus property for g-c-c
+Subject: [PATCH 02/16] subman: Add InstalledProducts dbus property for g-c-c
 
 ---
  plugins/subman/gsd-subscription-manager.c | 135 ++++++++++++++++++++++
@@ -764,5 +764,5 @@ index 08b13fa6..a8c18a26 100644
  	handle_set_property
  };
 -- 
-2.30.0
+2.41.0.rc2
 

@@ -1,7 +1,7 @@
-From a1c2685bc6b255f22b6ce4645c001d428cb67907 Mon Sep 17 00:00:00 2001
+From b0fb67c05e19a1a8715c1045f02657055d9e2578 Mon Sep 17 00:00:00 2001
 From: Marek Kasik <mkasik@redhat.com>
 Date: Wed, 22 May 2019 14:56:42 +0200
-Subject: [PATCH] smartcard: Cancel cancellable when stopping
+Subject: [PATCH 1/4] smartcard: Cancel cancellable when stopping
 
 self->cancellable in GsdSmartcardManager is not cancelled
 at gsd_smartcard_manager_stop() and hence some callbacks are
@@ -19,13 +19,40 @@ https://bugzilla.redhat.com/show_bug.cgi?id=1688791 and
 their duplicates for additional info.
 ---
  plugins/smartcard/gsd-smartcard-manager.c | 7 +++++--
- 1 file changed, 5 insertions(+), 2 deletion(-)
+ 1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
-index 014c17be..da1e0d6d 100644
+index 94ffdd90..09ccecc0 100644
 --- a/plugins/smartcard/gsd-smartcard-manager.c
 +++ b/plugins/smartcard/gsd-smartcard-manager.c
-@@ -184,7 +184,7 @@
+@@ -157,71 +157,72 @@ unload_nss (GsdSmartcardManager *self)
+         if (self->priv->nss_context != NULL) {
+                 g_clear_pointer (&self->priv->nss_context,
+                                  NSS_ShutdownContext);
+                 g_debug ("NSS database '%s' unloaded", GSD_SMARTCARD_MANAGER_NSS_DB);
+         } else {
+                 g_debug ("NSS database '%s' already not loaded", GSD_SMARTCARD_MANAGER_NSS_DB);
+         }
+ }
+ 
+ typedef struct
+ {
+         SECMODModule *driver;
+         GHashTable *smartcards;
+         int number_of_consecutive_errors;
+ } WatchSmartcardsOperation;
+ 
+ static void
+ on_watch_cancelled (GCancellable             *cancellable,
+                     WatchSmartcardsOperation *operation)
+ {
+         SECMOD_CancelWait (operation->driver);
+ }
+ 
+ static gboolean
+ watch_one_event_from_driver (GsdSmartcardManager       *self,
+                              WatchSmartcardsOperation  *operation,
+                              GCancellable              *cancellable,
                               GError                   **error)
  {
          GsdSmartcardManagerPrivate *priv = self->priv;
@@ -34,7 +61,9 @@ index 014c17be..da1e0d6d 100644
          CK_SLOT_ID slot_id;
          gulong handler_id;
          int old_slot_series = -1, slot_series;
-@@ -190,7 +190,8 @@ watch_one_event_from_driver (GsdSmartcardManager       *self,
+ 
+         handler_id = g_cancellable_connect (cancellable,
+                                             G_CALLBACK (on_watch_cancelled),
                                              operation,
                                              NULL);
  
@@ -44,7 +73,61 @@ index 014c17be..da1e0d6d 100644
  
          g_cancellable_disconnect (cancellable, handler_id);
  
-@@ -773,6 +774,8 @@ gsd_smartcard_manager_stop (GsdSmartcardManager *self)
+         if (g_cancellable_set_error_if_cancelled (cancellable, error)) {
+                 g_warning ("smartcard event function cancelled");
+                 return FALSE;
+         }
+ 
+         if (card == NULL) {
+                 int error_code;
+ 
+                 error_code = PORT_GetError ();
+ 
+                 operation->number_of_consecutive_errors++;
+                 if (operation->number_of_consecutive_errors > 10) {
+                      g_warning ("Got %d consecutive smartcard errors, so giving up.",
+                                 operation->number_of_consecutive_errors);
+ 
+                      g_set_error (error,
+                                   GSD_SMARTCARD_MANAGER_ERROR,
+                                   GSD_SMARTCARD_MANAGER_ERROR_WITH_NSS,
+                                   "encountered unexpected error while "
+                                   "waiting for smartcard events (error %x)",
+                                   error_code);
+                      return FALSE;
+                 }
+ 
+                 g_warning ("Got potentially spurious smartcard event error: %x.", error_code);
+ 
+                 g_usleep (0.5 * G_USEC_PER_SEC);
+@@ -764,60 +765,62 @@ gsd_smartcard_manager_idle_cb (GsdSmartcardManager *self)
+ 
+         gnome_settings_profile_end (NULL);
+ 
+         priv->start_idle_id = 0;
+         return FALSE;
+ }
+ 
+ gboolean
+ gsd_smartcard_manager_start (GsdSmartcardManager  *self,
+                              GError              **error)
+ {
+         GsdSmartcardManagerPrivate *priv = self->priv;
+ 
+         gnome_settings_profile_start (NULL);
+ 
+         priv->start_idle_id = g_idle_add ((GSourceFunc) gsd_smartcard_manager_idle_cb, self);
+         g_source_set_name_by_id (priv->start_idle_id, "[gnome-settings-daemon] gsd_smartcard_manager_idle_cb");
+ 
+         gnome_settings_profile_end (NULL);
+ 
+         return TRUE;
+ }
+ 
+ void
+ gsd_smartcard_manager_stop (GsdSmartcardManager *self)
+ {
+         GsdSmartcardManagerPrivate *priv = self->priv;
  
          g_debug ("Stopping smartcard manager");
  
@@ -53,6 +136,33 @@ index 014c17be..da1e0d6d 100644
          unload_nss (self);
  
          g_clear_object (&priv->settings);
+         g_clear_object (&priv->cancellable);
+         g_clear_object (&priv->session_manager);
+         g_clear_object (&priv->screen_saver);
+ }
+ 
+ static void
+ on_screen_locked (GsdScreenSaver      *screen_saver,
+                   GAsyncResult        *result,
+                   GsdSmartcardManager *self)
+ {
+         gboolean is_locked;
+         GError *error = NULL;
+ 
+         is_locked = gsd_screen_saver_call_lock_finish (screen_saver, result, &error);
+ 
+         if (!is_locked) {
+                 g_warning ("Couldn't lock screen: %s", error->message);
+                 g_error_free (error);
+                 return;
+         }
+ }
+ 
+ static void
+ lock_screen (GsdSmartcardManager *self)
+ {
+         GsdSmartcardManagerPrivate *priv = self->priv;
+ 
 -- 
-2.23.0
+2.39.2
 

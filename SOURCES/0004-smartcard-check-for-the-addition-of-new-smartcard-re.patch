@@ -1,0 +1,94 @@
+From 2b0b62d8b04a2c3d6e1d4fccacfd29dd3da2d04c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?David=20H=C3=A4rdeman?= <david@hardeman.nu>
+Date: Wed, 12 Apr 2023 22:23:51 +0200
+Subject: [PATCH 4/4] smartcard: check for the addition of new smartcard
+ readers
+
+gsd-smartcard currently checks for the insertion/removal of smartcards
+in reader devices which where present at the time gsd-smartcard was
+started, but does not account for new smartcard readers appearing
+after gsd-smartcard was started.
+
+This patch adds support for checking for the addition of new slots
+(i.e. smartcard readers), which is necessary to support devices
+like the Yubikey (a "reader" and a smartcard) which may be inserted
+after gsd-smartcard was started.
+---
+ plugins/smartcard/gsd-smartcard-manager.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
+index a29df3e0..fbb9b260 100644
+--- a/plugins/smartcard/gsd-smartcard-manager.c
++++ b/plugins/smartcard/gsd-smartcard-manager.c
+@@ -188,61 +188,66 @@ watch_one_event_from_driver (GsdSmartcardManager       *self,
+         CK_SLOT_ID slot_id;
+         gulong handler_id;
+         int old_slot_series = -1, slot_series;
+ 
+         handler_id = g_cancellable_connect (cancellable,
+                                             G_CALLBACK (on_watch_cancelled),
+                                             operation,
+                                             NULL);
+ 
+         if (handler_id != 0) {
+                 /* Use the non-blocking version of the call as p11-kit, which
+                  * is used on both Fedora and Ubuntu, doesn't support the
+                  * blocking version of the call.
+                  */
+                 card = SECMOD_WaitForAnyTokenEvent (operation->driver, CKF_DONT_BLOCK, PR_SecondsToInterval (1));
+         }
+ 
+         g_cancellable_disconnect (cancellable, handler_id);
+ 
+         if (g_cancellable_set_error_if_cancelled (cancellable, error)) {
+                 g_warning ("smartcard event function cancelled");
+                 return FALSE;
+         }
+ 
+         if (card == NULL) {
+                 int error_code;
+ 
+                 error_code = PORT_GetError ();
+ 
+                 if (error_code == SEC_ERROR_NO_EVENT) {
+-                    g_usleep (1 * G_USEC_PER_SEC);
++                    int old_slot_count = operation->driver->slotCount;
++                    SECMOD_UpdateSlotList (operation->driver);
++                    if (operation->driver->slotCount != old_slot_count)
++                        g_debug ("Slot count change %i -> %i", old_slot_count, operation->driver->slotCount);
++                    else
++                        g_usleep (1 * G_USEC_PER_SEC);
+ 
+                     return TRUE;
+                 }
+ 
+                 operation->number_of_consecutive_errors++;
+                 if (operation->number_of_consecutive_errors > 10) {
+                      g_warning ("Got %d consecutive smartcard errors, so giving up.",
+                                 operation->number_of_consecutive_errors);
+ 
+                      g_set_error (error,
+                                   GSD_SMARTCARD_MANAGER_ERROR,
+                                   GSD_SMARTCARD_MANAGER_ERROR_WITH_NSS,
+                                   "encountered unexpected error while "
+                                   "waiting for smartcard events (error %x)",
+                                   error_code);
+                      return FALSE;
+                 }
+ 
+                 g_warning ("Got potentially spurious smartcard event error: %x.", error_code);
+ 
+                 g_usleep (1 * G_USEC_PER_SEC);
+                 return TRUE;
+         }
+         operation->number_of_consecutive_errors = 0;
+ 
+         slot_id = PK11_GetSlotID (card);
+         slot_series = PK11_GetSlotSeries (card);
+ 
+         old_card = g_hash_table_lookup (operation->smartcards, GINT_TO_POINTER ((int) slot_id));
+ 
+-- 
+2.39.2
+

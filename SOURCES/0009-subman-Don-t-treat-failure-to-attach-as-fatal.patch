@@ -1,7 +1,7 @@
-From 1255b2b83284d262f6b8c3ceb23d499ddbf77d48 Mon Sep 17 00:00:00 2001
+From 49cce282490f15be681367e769cd920176318969 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Thu, 21 Jan 2021 09:52:19 -0500
-Subject: [PATCH 09/15] subman: Don't treat failure to attach as fatal
+Subject: [PATCH 09/16] subman: Don't treat failure to attach as fatal
 
 Many organizations don't require specific subscriptions to get
 updates (called "simple content access").  At the moment,
@@ -306,5 +306,5 @@ index edf1e41f..53a4d56b 100644
  
  	return EXIT_SUCCESS;
 -- 
-2.30.0
+2.41.0.rc2
 

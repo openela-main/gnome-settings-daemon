@@ -1,7 +1,7 @@
-From 0d88b2133b20957e00b0eeb0c0f48932485cc73d Mon Sep 17 00:00:00 2001
+From b95bfe8f944fdc9080a660a35e3cf493b4f10154 Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Fri, 28 Jun 2019 18:10:36 +0200
-Subject: [PATCH 03/15] subman: Increase RHSM dbus call timeouts
+Subject: [PATCH 03/16] subman: Increase RHSM dbus call timeouts
 
 Increase the dbus timeouts to 5 minutes as the register/unregister calls
 seem to routinely take more than a minute.
@@ -309,5 +309,5 @@ index 182f7190..af7a82e9 100644
  	/* auto-attach */
  	if (!_helper_auto_attach (&error)) {
 -- 
-2.30.0
+2.41.0.rc2
 

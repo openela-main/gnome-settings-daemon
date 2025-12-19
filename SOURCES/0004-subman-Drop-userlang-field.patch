@@ -1,7 +1,7 @@
-From df08a65d86626ff135a12d96cff6f48f3f1864ae Mon Sep 17 00:00:00 2001
+From a88c8e3fdf4f74145d4409a6755326c197151e5a Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Thu, 20 Aug 2020 11:20:47 -0400
-Subject: [PATCH 04/15] subman: Drop userlang field
+Subject: [PATCH 04/16] subman: Drop userlang field
 
 It's currently always erroneously set to empty string.
 
@@ -450,5 +450,5 @@ index a8c18a26..46f051a5 100644
  	g_debug ("Stopping subscription manager");
  	_client_unload (manager);
 -- 
-2.30.0
+2.41.0.rc2
 

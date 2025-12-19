@@ -1,7 +1,7 @@
-From 477dc8accccab568002bd19caa3fbf898bc05aad Mon Sep 17 00:00:00 2001
+From 6f5bead6dee9ecfdd4bb00651780d0b3ba44e154 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 25 Aug 2020 10:34:03 -0400
-Subject: [PATCH 07/15] subman: Force re-subscribe if the admin already
+Subject: [PATCH 07/16] subman: Force re-subscribe if the admin already
  subscribed
 
 It's possible for an admin to to half-enroll the system with RHN,
@@ -256,5 +256,5 @@ index f84e91bf..3931ef2e 100644
  	if (!_helper_save_config ("server.prefix", prefix, &error)) {
  		g_printerr ("Failed to save prefix: %s\n", error->message);
 -- 
-2.30.0
+2.41.0.rc2
 
