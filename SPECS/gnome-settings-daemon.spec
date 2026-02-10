@@ -12,7 +12,7 @@
 
 Name:           gnome-settings-daemon
 Version:        3.32.0
-Release:        21%{?dist}
+Release:        22%{?dist}
 Summary:        The daemon sharing settings from GNOME to GTK+/KDE applications
 
 License:        GPLv2+
@@ -135,6 +135,8 @@ Patch70001: 0001-power-Respect-the-nothing-power-button-action-for-VM.patch
 Patch70002: 0001-power-Avoid-automatic-logout-in-GDM-greeter.patch
 Patch70003: 0002-power-Never-register-sleep-timeout-for-logout-in-GDM.patch
 Patch70004: 0001-Make-power-button-action-always-power-off-when-chass.patch
+
+Patch80001: housekeeping-debounce-mount-checks.patch
 
 %description
 A daemon to share settings from GNOME to other applications. It also
@@ -275,6 +277,10 @@ mkdir $RPM_BUILD_ROOT%{_libdir}/gnome-settings-daemon-3.0/gtk-modules
 %{_libdir}/pkgconfig/gnome-settings-daemon.pc
 
 %changelog
+* Fri Jan 09 2026 Felupe Borges <feborges@redhat.com> - 3.32.0-22
+- Debounce mount checks in Low Disk Space monitoring
+  Resolves: RHEL-127805
+
 * Mon Nov 03 2025 Felipe Borges <feborges@redhat.com> - 3.32.0-21
 - Add icon to subman notifications
   Resolves: RHEL-5074

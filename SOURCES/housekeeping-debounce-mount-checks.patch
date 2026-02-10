@@ -1,0 +1,252 @@
+From 197eab664af1cbd6bc507c81cf5775c97f626df2 Mon Sep 17 00:00:00 2001
+From: Christian Hergert <chergert@redhat.com>
+Date: Fri, 21 Nov 2025 12:49:25 -0800
+Subject: [PATCH 1/4] plugins/housekeeping: only make has_trash() call once
+
+We don't need to call this twice, it is only called in these two places
+so just pass in the value from the previous call.
+
+(cherry picked from commit a66871d63abc68fc4f9a9880a33d4cc35b665877)
+---
+ plugins/housekeeping/gsd-disk-space.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/housekeeping/gsd-disk-space.c b/plugins/housekeeping/gsd-disk-space.c
+index bd3437e5..0628425e 100644
+--- a/plugins/housekeeping/gsd-disk-space.c
++++ b/plugins/housekeeping/gsd-disk-space.c
+@@ -556,11 +556,11 @@ on_notification_closed (NotifyNotification *n)
+ static void
+ ldsm_notify (const char *summary,
+              const char *body,
+-             const char *mount_path)
++             const char *mount_path,
++             gboolean    has_trash)
+ {
+         gchar *program;
+         gboolean has_disk_analyzer;
+-        gboolean has_trash;
+ 
+         /* Don't show a notice if one is already displayed */
+         if (notification != NULL)
+@@ -591,8 +591,6 @@ ldsm_notify (const char *summary,
+                                                 g_free);
+         }
+ 
+-        has_trash = ldsm_mount_has_trash (mount_path);
+-
+         if (has_trash) {
+                 notify_notification_add_action (notification,
+                                                 "empty-trash",
+@@ -656,7 +654,7 @@ ldsm_notify_for_mount (LdsmMountInfo *mount,
+                 }
+         }
+ 
+-        ldsm_notify (summary, body, path);
++        ldsm_notify (summary, body, path, has_trash);
+ 
+         g_free (free_space_str);
+         g_free (summary);
+-- 
+2.34.1
+
+
+From 4a0ebf20b0cbc117210f8ec2692d17a47e9b93af Mon Sep 17 00:00:00 2001
+From: Christian Hergert <chergert@redhat.com>
+Date: Fri, 21 Nov 2025 12:53:56 -0800
+Subject: [PATCH 2/4] plugins/housekeeping: track changes to ignored mounts in
+ glib
+
+This mirrors the changes in GNOME/glib!4916 which adds the following
+system mounts:
+
+ * binfmt_misc
+ * bpf
+ * efivarfs
+ * tracefs
+
+(cherry picked from commit cfe8049a6de68a988c5fd6cefa837d11807f4846)
+---
+ plugins/housekeeping/gsd-disk-space-helper.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/plugins/housekeeping/gsd-disk-space-helper.c b/plugins/housekeeping/gsd-disk-space-helper.c
+index 56e054ca..36f4b3b1 100644
+--- a/plugins/housekeeping/gsd-disk-space-helper.c
++++ b/plugins/housekeeping/gsd-disk-space-helper.c
+@@ -50,6 +50,8 @@ gsd_should_ignore_unix_mount (GUnixMountEntry *mount)
+                 "auto",
+                 "autofs",
+                 "autofs4",
++                "binfmt_misc",
++                "bpf",
+                 "cgroup",
+                 "configfs",
+                 "cxfs",
+@@ -58,6 +60,7 @@ gsd_should_ignore_unix_mount (GUnixMountEntry *mount)
+                 "devpts",
+                 "devtmpfs",
+                 "ecryptfs",
++                "efivarfs",
+                 "fdescfs",
+                 "fusectl",
+                 "gfs",
+@@ -86,6 +89,7 @@ gsd_should_ignore_unix_mount (GUnixMountEntry *mount)
+                 "selinuxfs",
+                 "sysfs",
+                 "tmpfs",
++                "tracefs",
+                 "usbfs",
+                 "zfs",
+                 NULL
+-- 
+2.34.1
+
+
+From 90318eec1e60665d39b6c5841cb1a01b11e96363 Mon Sep 17 00:00:00 2001
+From: Christian Hergert <chergert@redhat.com>
+Date: Fri, 21 Nov 2025 13:40:53 -0800
+Subject: [PATCH 3/4] plugins/housekeeping: check user-data-dir fs::id once
+
+We don't, as a platform, really support changing out your entire file
+system out from underneath a running session. So only check the
+file-system identifier for the user trash directory once at startup.
+
+(cherry picked from commit 4cc8891b43ffacd378155b6d838dcd279e85144f)
+---
+ plugins/housekeeping/gsd-disk-space.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/housekeeping/gsd-disk-space.c b/plugins/housekeeping/gsd-disk-space.c
+index 0628425e..1be45465 100644
+--- a/plugins/housekeeping/gsd-disk-space.c
++++ b/plugins/housekeeping/gsd-disk-space.c
+@@ -73,6 +73,7 @@ static GSList            *ignore_paths = NULL;
+ static GSettings         *settings = NULL;
+ static GSettings         *privacy_settings = NULL;
+ static NotifyNotification *notification = NULL;
++static char              *user_data_attr_id_fs;
+ 
+ static guint64           *time_read;
+ 
+@@ -106,17 +107,12 @@ ldsm_get_fs_id_for_path (const gchar *path)
+ static gboolean
+ ldsm_mount_has_trash (const char *path)
+ {
+-        const gchar *user_data_dir;
+-        gchar *user_data_attr_id_fs;
+         gchar *path_attr_id_fs;
+         gboolean mount_uses_user_trash = FALSE;
+         gchar *trash_files_dir;
+         gboolean has_trash = FALSE;
+         GDir *dir;
+ 
+-        user_data_dir = g_get_user_data_dir ();
+-        user_data_attr_id_fs = ldsm_get_fs_id_for_path (user_data_dir);
+-
+         path_attr_id_fs = ldsm_get_fs_id_for_path (path);
+ 
+         if (g_strcmp0 (user_data_attr_id_fs, path_attr_id_fs) == 0) {
+@@ -977,6 +973,8 @@ gsd_ldsm_setup (gboolean check_now)
+                                                     g_free,
+                                                     ldsm_free_mount_info);
+ 
++        user_data_attr_id_fs = ldsm_get_fs_id_for_path (g_get_user_data_dir ());
++
+         settings = g_settings_new (SETTINGS_HOUSEKEEPING_DIR);
+         privacy_settings = g_settings_new (PRIVACY_SETTINGS);
+         gsd_ldsm_get_config ();
+-- 
+2.34.1
+
+
+From bb697b6810715c55d4027946a55e5aee010694b8 Mon Sep 17 00:00:00 2001
+From: Felipe Borges <felipeborges@gnome.org>
+Date: Fri, 9 Jan 2026 11:05:14 +0100
+Subject: [PATCH 4/4] housekeeping: Debounce mount checks in Low Disk Space
+ monitoring
+
+When an environment triggers too many mount events, the Low Disk Space
+monitor will parse the mount table with g_unix_mounts_get() too many times,
+causing gsd-housekeeping to consume excessive CPU.
+
+These changes prevent mount change events from triggering too many expensive
+mount checks by adding a rate-limiting timeout with random delay (50-500ms)
+and ensuring only one pending check is queued at a time.
+
+https://issues.redhat.com/browse/RHEL-127715
+---
+ plugins/housekeeping/gsd-disk-space.c | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/housekeeping/gsd-disk-space.c b/plugins/housekeeping/gsd-disk-space.c
+index 1be45465..541fbf5d 100644
+--- a/plugins/housekeeping/gsd-disk-space.c
++++ b/plugins/housekeeping/gsd-disk-space.c
+@@ -41,6 +41,8 @@
+ 
+ #define CHECK_EVERY_X_SECONDS      60
+ 
++#define UPDATE_TIMEOUT             100 /* ms */
++
+ #define DISK_SPACE_ANALYZER        "baobab"
+ 
+ #define SETTINGS_HOUSEKEEPING_DIR     "org.gnome.settings-daemon.plugins.housekeeping"
+@@ -64,6 +66,7 @@ typedef struct
+ 
+ static GHashTable        *ldsm_notified_hash = NULL;
+ static unsigned int       ldsm_timeout_id = 0;
++static guint              ldsm_update_id = 0;
+ static GUnixMountMonitor *ldsm_monitor = NULL;
+ static double             free_percent_notify = 0.05;
+ static double             free_percent_notify_again = 0.01;
+@@ -887,12 +890,13 @@ ldsm_is_hash_item_not_in_mounts (gpointer key,
+         return TRUE;
+ }
+ 
+-static void
+-ldsm_mounts_changed (GObject  *monitor,
+-                     gpointer  data)
++static gboolean
++ldsm_mounts_changed_timeout (gpointer user_data)
+ {
+         GList *mounts;
+ 
++        ldsm_update_id = 0;
++
+         /* remove the saved data for mounts that got removed */
+         mounts = g_unix_mounts_get (time_read);
+         g_hash_table_foreach_remove (ldsm_notified_hash,
+@@ -908,6 +912,20 @@ ldsm_mounts_changed (GObject  *monitor,
+         ldsm_timeout_id = g_timeout_add_seconds (CHECK_EVERY_X_SECONDS,
+                                                  ldsm_check_all_mounts, NULL);
+         g_source_set_name_by_id (ldsm_timeout_id, "[gnome-settings-daemon] ldsm_check_all_mounts");
++
++        return G_SOURCE_REMOVE;
++}
++
++static void
++ldsm_mounts_changed (GObject  *monitor,
++                     gpointer  data)
++{
++        if (ldsm_update_id != 0)
++                return;
++
++        ldsm_update_id = g_timeout_add (UPDATE_TIMEOUT * g_random_double_range (0.5, 5),
++                                       ldsm_mounts_changed_timeout,
++                                       NULL);
+ }
+ 
+ static gboolean
+@@ -1007,6 +1025,8 @@ gsd_ldsm_clean (void)
+                 g_source_remove (purge_temp_id);
+         purge_temp_id = 0;
+ 
++        g_clear_handle_id (&ldsm_update_id, g_source_remove);
++
+         if (ldsm_timeout_id)
+                 g_source_remove (ldsm_timeout_id);
+         ldsm_timeout_id = 0;
+-- 
+2.34.1
+
