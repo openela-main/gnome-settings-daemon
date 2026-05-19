@@ -1,0 +1,79 @@
+From 88e90f2748f08f14d3f635939f3f85f05f66ecb3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Fri, 7 Feb 2025 18:05:51 +0100
+Subject: [PATCH] smartcard/manager: Consider modules with no slots as
+ removable devices
+
+Some smartcard modules support removable slots but they don't advertise
+them until a smartcard device is actually plugged.
+
+In such case we can't know preventively if the module provides
+removable-token (e.g. smartcard) support, so we can just assume that it
+does or we won't be able to catch the token insertion when this happens.
+
+Closes: #782
+
+Part-of: <https://gitlab.gnome.org/GNOME/gnome-settings-daemon/-/merge_requests/405>
+---
+ plugins/smartcard/gsd-smartcard-manager.c | 27 ++++++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/smartcard/gsd-smartcard-manager.c b/plugins/smartcard/gsd-smartcard-manager.c
+index c049f492..4def3137 100644
+--- a/plugins/smartcard/gsd-smartcard-manager.c
++++ b/plugins/smartcard/gsd-smartcard-manager.c
+@@ -520,13 +520,31 @@ on_smartcards_from_module_watched (GsdSmartcardManager *self,
+ }
+ 
+ static gboolean
+-module_has_removable_slot (GckModule *module)
++module_should_be_watched (GckModule *module)
+ {
+         g_autolist(GckSlot) slots = NULL;
+         GList *l;
+ 
+         slots = gck_module_get_slots (module, FALSE);
+ 
++        if (slots == NULL) {
++                CK_FUNCTION_LIST_PTR p11_module;
++                g_autofree char *module_name = NULL;
++
++                p11_module = gck_module_get_functions (module);
++                module_name = p11_kit_module_get_name (p11_module);
++
++                /* No slot is currently available, so we can't make assumptions
++                 * whether the module supports or not removable devices.
++                 * So let's be conservative here and let's just assume that the
++                 * module does support removable devices, so that we will monitor
++                 * it for changes.
++                 */
++                g_debug ("No slot found for module %s, let's assume it supports "
++                         "removable devices", module_name);
++                return TRUE;
++        }
++
+         for (l = slots; l; l = l->next) {
+                 GckSlot *slot = l->data;
+ 
+@@ -562,13 +580,16 @@ on_modules_initialized (GObject      *source_object,
+                 GckModule *module = l->data;
+                 CK_FUNCTION_LIST_PTR p11_module;
+                 g_autofree char *module_name = NULL;
++                gboolean should_watch;
+ 
+                 p11_module = gck_module_get_functions (module);
+                 module_name = p11_kit_module_get_name (p11_module);
++                should_watch = module_should_be_watched (module);
+ 
+-                g_debug ("Found p11-kit module %s", module_name);
++                g_debug ("Found p11-kit module %s (watched: %d)", module_name,
++                         should_watch);
+ 
+-                if (!module_has_removable_slot (module))
++                if (!should_watch)
+                         continue;
+ 
+                 self->smartcard_modules = g_list_prepend (self->smartcard_modules,
+-- 
+2.53.0
+

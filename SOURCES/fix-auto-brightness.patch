@@ -1,0 +1,486 @@
+From 000316a46ae7a91ff4e1a3d23b5b290caa7558c1 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 19:40:19 +0200
+Subject: [PATCH 1/7] power: Disable auto brightness when we release the light
+ sensor
+
+---
+ plugins/power/gsd-power-manager.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index b7b5b642..a8995bd5 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1293,16 +1293,17 @@ light_released_cb (GObject      *source_object,
+                    GAsyncResult *res,
+                    gpointer      user_data)
+ {
++        GsdPowerManager *manager = GSD_POWER_MANAGER (user_data);
+         g_autoptr(GError) error = NULL;
+         g_autoptr(GVariant) result = NULL;
+ 
+         result = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object),
+                                            res,
+                                            &error);
+-        if (result == NULL) {
++        if (result == NULL)
+                 g_warning ("Release of light sensors failed: %s", error->message);
+-                return;
+-        }
++
++        shell_brightness_set_auto_target (manager, -1.0);
+ }
+ 
+ static gboolean
+-- 
+2.53.0
+
+
+From 69219b30bdef704d891b3278d03ae758dde07821 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 20:35:17 +0200
+Subject: [PATCH 2/7] power: Take double in set_auto_target because we send a
+ double
+
+---
+ plugins/power/gsd-power-manager.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index a8995bd5..c8d3ef8e 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1219,7 +1219,7 @@ shell_brightness_set_auto_target_cb (GObject      *source_object,
+ 
+ static void
+ shell_brightness_set_auto_target (GsdPowerManager *manager,
+-                                  float            target)
++                                  double           target)
+ {
+         if (!manager->shell_brightness_proxy)
+                 return;
+-- 
+2.53.0
+
+
+From 9f596d601b68231d1364247ffb14f686fce2ed7b Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 20:37:03 +0200
+Subject: [PATCH 3/7] power: Use autoptrs in iio_proxy_changed
+
+---
+ plugins/power/gsd-power-manager.c | 13 +++++--------
+ 1 file changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index c8d3ef8e..c9831222 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -2884,8 +2884,8 @@ logind_proxy_signal_cb (GDBusProxy  *proxy,
+ static void
+ iio_proxy_changed (GsdPowerManager *manager)
+ {
+-        GVariant *val_has = NULL;
+-        GVariant *val_als = NULL;
++        g_autoptr (GVariant) val_has = NULL;
++        g_autoptr (GVariant) val_als = NULL;
+         gdouble brightness;
+         gdouble alpha;
+         gint64 current_time;
+@@ -2902,10 +2902,10 @@ iio_proxy_changed (GsdPowerManager *manager)
+         /* get latest results, which do not have to be Lux */
+         val_has = g_dbus_proxy_get_cached_property (manager->iio_proxy, "HasAmbientLight");
+         if (val_has == NULL || !g_variant_get_boolean (val_has))
+-                goto out;
++                return;
+         val_als = g_dbus_proxy_get_cached_property (manager->iio_proxy, "LightLevel");
+         if (val_als == NULL || g_variant_get_double (val_als) == 0.0)
+-                goto out;
++                return;
+         manager->ambient_last_absolute = g_variant_get_double (val_als);
+         g_debug ("Read last absolute light level: %f", manager->ambient_last_absolute);
+ 
+@@ -2935,7 +2935,7 @@ iio_proxy_changed (GsdPowerManager *manager)
+ 
+         /* no valid readings yet */
+         if (manager->ambient_accumulator < 0.f)
+-                goto out;
++                return;
+ 
+         /* set new value */
+         g_debug ("Setting brightness from ambient %.1f%%",
+@@ -2946,9 +2946,6 @@ iio_proxy_changed (GsdPowerManager *manager)
+ 
+         /* Assume setting worked. */
+         manager->ambient_percentage_old = pc;
+-out:
+-        g_clear_pointer (&val_has, g_variant_unref);
+-        g_clear_pointer (&val_als, g_variant_unref);
+ }
+ 
+ static void
+-- 
+2.53.0
+
+
+From 7e27736fe9a2c0b2b914569da5ad7d7fdc7b4d1d Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 20:41:22 +0200
+Subject: [PATCH 4/7] power: Rename ambient_last_time to
+ ambient_update_last_time
+
+We will track another last_time later, so rename it in advance.
+---
+ plugins/power/gsd-power-manager.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index c9831222..fbc48ab3 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -176,7 +176,7 @@ struct _GsdPowerManager
+         gdouble                  ambient_norm_value;
+         gdouble                  ambient_percentage_old;
+         gdouble                  ambient_last_absolute;
+-        gint64                   ambient_last_time;
++        gint64                   ambient_update_last_time;
+ 
+         /* Power Profiles */
+         GDBusProxy              *power_profiles_proxy;
+@@ -2919,11 +2919,11 @@ iio_proxy_changed (GsdPowerManager *manager)
+ 
+         /* time-weighted constant for moving average */
+         current_time = g_get_monotonic_time();
+-        if (manager->ambient_last_time)
+-                alpha = 1.0f / (1.0f + (GSD_AMBIENT_TIME_CONSTANT / (current_time - manager->ambient_last_time)));
++        if (manager->ambient_update_last_time)
++                alpha = 1.0f / (1.0f + (GSD_AMBIENT_TIME_CONSTANT / (current_time - manager->ambient_update_last_time)));
+         else
+                 alpha = 0.0f;
+-        manager->ambient_last_time = current_time;
++        manager->ambient_update_last_time = current_time;
+ 
+         /* calculate exponential weighted moving average */
+         brightness = manager->ambient_last_absolute * 100.f / manager->ambient_norm_value;
+@@ -3046,7 +3046,7 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         manager->ambient_norm_value = -1.f;
+         manager->ambient_percentage_old = -1.f;
+         manager->ambient_last_absolute = -1.f;
+-        manager->ambient_last_time = 0;
++        manager->ambient_update_last_time = 0;
+ 
+         /* Set up a delay inhibitor to be informed about suspend attempts */
+         g_signal_connect (manager->logind_proxy, "g-signal",
+-- 
+2.53.0
+
+
+From 64d268883b060b1f8e2719ef4fcd80dc987b270e Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 20:43:45 +0200
+Subject: [PATCH 5/7] power: Rework ambient light sensor normalization
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This reworks the normalization and fixes two things in particular:
+
+The percentage `pc` is an int so if we want values different
+from `0` and `1` we need to use floating point division.
+
+When gsd-power controlled the backlight it would init that value from
+the backlight on startup but we don't have that available anymore so
+can only pick an arbitrary value.
+
+Co-authored-by: Guido Günther <agx@sigxcpu.org>
+Fixes: 08ae6461 ("power: Switch from direct mutter backlight handling to Shell.Brightness")
+---
+ plugins/power/gsd-power-manager.c | 52 +++++++++++--------------------
+ 1 file changed, 19 insertions(+), 33 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index fbc48ab3..10dfe601 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -94,6 +94,10 @@
+ /* Convert bandwidth to time constant.  Units of constant are microseconds. */
+ #define GSD_AMBIENT_TIME_CONSTANT       (G_USEC_PER_SEC * 1.0f / (2.0f * G_PI * GSD_AMBIENT_BANDWIDTH_HZ))
+ 
++/* Normalize against this factor of the current absolute reading.
++ * The value has been chosen arbitrarily but seems to work in practice. */
++#define GSD_AMBIENT_NORMALIZE_CONSTANT (1.5f)
++
+ static const gchar introspection_xml[] =
+ "<node>"
+ "  <interface name='org.gnome.SettingsDaemon.Power.Keyboard'>"
+@@ -174,8 +178,6 @@ struct _GsdPowerManager
+         gboolean                 ambient_norm_required;
+         gdouble                  ambient_accumulator;
+         gdouble                  ambient_norm_value;
+-        gdouble                  ambient_percentage_old;
+-        gdouble                  ambient_last_absolute;
+         gint64                   ambient_update_last_time;
+ 
+         /* Power Profiles */
+@@ -2609,19 +2611,6 @@ idle_became_active_cb (GnomeIdleMonitor *monitor,
+         manager->user_active_id = 0;
+ }
+ 
+-static void
+-ch_backlight_renormalize (GsdPowerManager *manager)
+-{
+-        if (manager->ambient_percentage_old < 0)
+-                return;
+-        if (manager->ambient_last_absolute < 0)
+-                return;
+-        manager->ambient_norm_value = manager->ambient_last_absolute /
+-                                        (gdouble) manager->ambient_percentage_old;
+-        manager->ambient_norm_value *= 100.f;
+-        manager->ambient_norm_required = FALSE;
+-}
+-
+ static void
+ engine_settings_key_changed_cb (GSettings *settings,
+                                 const gchar *key,
+@@ -2886,10 +2875,10 @@ iio_proxy_changed (GsdPowerManager *manager)
+ {
+         g_autoptr (GVariant) val_has = NULL;
+         g_autoptr (GVariant) val_als = NULL;
++        gdouble ambient_last_absolute;
+         gdouble brightness;
+         gdouble alpha;
+         gint64 current_time;
+-        gint pc;
+ 
+         /* no display hardware */
+         if (!shell_brightness_has_control (manager))
+@@ -2904,17 +2893,20 @@ iio_proxy_changed (GsdPowerManager *manager)
+         if (val_has == NULL || !g_variant_get_boolean (val_has))
+                 return;
+         val_als = g_dbus_proxy_get_cached_property (manager->iio_proxy, "LightLevel");
+-        if (val_als == NULL || g_variant_get_double (val_als) == 0.0)
++        if (val_als == NULL || g_variant_get_double (val_als) <= 0.f)
+                 return;
+-        manager->ambient_last_absolute = g_variant_get_double (val_als);
+-        g_debug ("Read last absolute light level: %f", manager->ambient_last_absolute);
++        ambient_last_absolute = g_variant_get_double (val_als);
++        g_debug ("Read absolute light level: %f", ambient_last_absolute);
+ 
+         /* the user has asked to renormalize */
+         if (manager->ambient_norm_required) {
+-                g_debug ("Renormalizing light level from old light percentage: %.1f%%",
+-                         manager->ambient_percentage_old);
+-                manager->ambient_accumulator = manager->ambient_percentage_old;
+-                ch_backlight_renormalize (manager);
++                g_debug ("Normalizing light level");
++
++                manager->ambient_norm_value = ambient_last_absolute * GSD_AMBIENT_NORMALIZE_CONSTANT;
++                if (manager->ambient_accumulator <= 0.f)
++                        manager->ambient_accumulator = 100.f / GSD_AMBIENT_NORMALIZE_CONSTANT;
++
++                manager->ambient_norm_required = FALSE;
+         }
+ 
+         /* time-weighted constant for moving average */
+@@ -2926,7 +2918,7 @@ iio_proxy_changed (GsdPowerManager *manager)
+         manager->ambient_update_last_time = current_time;
+ 
+         /* calculate exponential weighted moving average */
+-        brightness = manager->ambient_last_absolute * 100.f / manager->ambient_norm_value;
++        brightness = ambient_last_absolute * 100.f / manager->ambient_norm_value;
+         brightness = MIN (brightness, 100.f);
+         brightness = MAX (brightness, 0.f);
+ 
+@@ -2937,15 +2929,11 @@ iio_proxy_changed (GsdPowerManager *manager)
+         if (manager->ambient_accumulator < 0.f)
+                 return;
+ 
+-        /* set new value */
+-        g_debug ("Setting brightness from ambient %.1f%%",
++        g_debug ("Calculated new target brightness from ambient: %.1f%%",
+                  manager->ambient_accumulator);
+-        pc = manager->ambient_accumulator;
+-
+-        shell_brightness_set_auto_target (manager, pc / 100);
+ 
+-        /* Assume setting worked. */
+-        manager->ambient_percentage_old = pc;
++        shell_brightness_set_auto_target (manager,
++                                          manager->ambient_accumulator / 100.0);
+ }
+ 
+ static void
+@@ -3044,8 +3032,6 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         manager->ambient_norm_required = TRUE;
+         manager->ambient_accumulator = -1.f;
+         manager->ambient_norm_value = -1.f;
+-        manager->ambient_percentage_old = -1.f;
+-        manager->ambient_last_absolute = -1.f;
+         manager->ambient_update_last_time = 0;
+ 
+         /* Set up a delay inhibitor to be informed about suspend attempts */
+-- 
+2.53.0
+
+
+From 9e5d7fee78d98aef62b70f4b4f3ce6209bab97af Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 15 Oct 2025 20:44:11 +0200
+Subject: [PATCH 6/7] power: Throttle target brightness updates to shell
+
+This limits the auto brightness updates to shell to 10 times per second.
+In the future, shell should be able to smoothly animate between targets
+which should allow us to decrease the value.
+---
+ plugins/power/gsd-power-manager.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 10dfe601..fc7d780b 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -94,6 +94,11 @@
+ /* Convert bandwidth to time constant.  Units of constant are microseconds. */
+ #define GSD_AMBIENT_TIME_CONSTANT       (G_USEC_PER_SEC * 1.0f / (2.0f * G_PI * GSD_AMBIENT_BANDWIDTH_HZ))
+ 
++/* How often to send target brightness updates to the shell.
++ * This is currently 10 times a second; but the shell should handle animating
++ * for us in the future so we can drop this value to ~1 time per second. */
++#define GSD_AMBIENT_SEND_UPDATE_INTERVAL (G_USEC_PER_SEC * 0.1f)
++
+ /* Normalize against this factor of the current absolute reading.
+  * The value has been chosen arbitrarily but seems to work in practice. */
+ #define GSD_AMBIENT_NORMALIZE_CONSTANT (1.5f)
+@@ -179,6 +184,7 @@ struct _GsdPowerManager
+         gdouble                  ambient_accumulator;
+         gdouble                  ambient_norm_value;
+         gint64                   ambient_update_last_time;
++        gint64                   ambient_set_last_time;
+ 
+         /* Power Profiles */
+         GDBusProxy              *power_profiles_proxy;
+@@ -2932,8 +2938,11 @@ iio_proxy_changed (GsdPowerManager *manager)
+         g_debug ("Calculated new target brightness from ambient: %.1f%%",
+                  manager->ambient_accumulator);
+ 
+-        shell_brightness_set_auto_target (manager,
+-                                          manager->ambient_accumulator / 100.0);
++        if (current_time - manager->ambient_set_last_time >= GSD_AMBIENT_SEND_UPDATE_INTERVAL) {
++                shell_brightness_set_auto_target (manager,
++                                                  manager->ambient_accumulator / 100.0);
++                manager->ambient_set_last_time = current_time;
++        }
+ }
+ 
+ static void
+@@ -3033,6 +3042,7 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         manager->ambient_accumulator = -1.f;
+         manager->ambient_norm_value = -1.f;
+         manager->ambient_update_last_time = 0;
++        manager->ambient_set_last_time = 0;
+ 
+         /* Set up a delay inhibitor to be informed about suspend attempts */
+         g_signal_connect (manager->logind_proxy, "g-signal",
+-- 
+2.53.0
+
+
+From 7db4b35548b7cebbdceb08e89cfcece072485a8b Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 24 Nov 2025 17:19:45 +0100
+Subject: [PATCH 7/7] power: Trigger re-normalization on out-of-band brightness
+ changes
+
+When brightness is auto-managed by ALS, we still have two situations
+where the brightness changes do not come from it:
+
+- User changes to the display brightness, either through keybindings,
+  or the sliders in the shell menu being changed.
+- Dimming requests on user inactivity.
+
+The response to both should be similar, the abrupt brightness change
+can alter ALS readings, so the brightness resulting of the change must
+be used as a new baseline for normalization.
+
+Tracking of user-triggered changes is done through a new BrightnessChanged
+signal in the org.gnome.Shell.Brightness D-Bus interface. This will do
+nothing on older versions of GNOME Shell without the signal, so effectively
+brightness changes would not trigger a re-normalization there, as before.
+If the signal exists and is emitted, then it will be used.
+
+(cherry picked from commit 5af04e7742701849e4f1ac04b340a3acf3a3345f)
+---
+ plugins/power/gsd-power-manager.c | 27 +++++++++++++++++++++------
+ 1 file changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index fc7d780b..a7a9dc6c 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1245,19 +1245,19 @@ shell_brightness_set_dimming_cb (GObject      *source_object,
+                                  GAsyncResult *res,
+                                  gpointer      user_data)
+ {
++        GsdPowerManager *manager = user_data;
+         g_autoptr (GVariant) result = NULL;
+         g_autoptr (GError) error = NULL;
+-        gboolean enable = !!GPOINTER_TO_UINT (user_data);
+ 
+         result = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object),
+                                            res,
+                                            &error);
+-        if (result)
++        if (result) {
++                manager->ambient_norm_required = TRUE;
+                 return;
++        }
+ 
+-        g_warning ("couldn't %s dimming: %s",
+-                   enable ? "enable" : "disable",
+-                   error->message);
++        g_warning ("couldn't change dimming: %s", error->message);
+ }
+ 
+ static void
+@@ -1273,7 +1273,7 @@ shell_brightness_set_dimming (GsdPowerManager *manager,
+                            G_DBUS_CALL_FLAGS_NONE,
+                            -1, NULL,
+                            shell_brightness_set_dimming_cb,
+-                           GUINT_TO_POINTER (enable));
++                           manager);
+ }
+ 
+ static void
+@@ -2982,6 +2982,16 @@ iio_proxy_vanished_cb (GDBusConnection *connection,
+         g_clear_object (&manager->iio_proxy);
+ }
+ 
++static void
++on_brightness_changed_by_user (GsdPowerManager *manager)
++{
++        /* Brightness was changed by the user, we need a new baseline
++         * for the normalization being applied.
++         */
++        g_debug ("User brightness change detected, re-normalizing");
++        manager->ambient_norm_required = TRUE;
++}
++
+ gboolean
+ gsd_power_manager_start (GsdPowerManager *manager,
+                          GError **error)
+@@ -3126,6 +3136,11 @@ gsd_power_manager_start (GsdPowerManager *manager,
+                 g_clear_error (error);
+         }
+ 
++        g_signal_connect_swapped (manager->shell_brightness_proxy,
++                                  "g-signal::BrightnessChanged",
++                                  G_CALLBACK (on_brightness_changed_by_user),
++                                  manager);
++
+         manager->devices_array = g_ptr_array_new_with_free_func (g_object_unref);
+         manager->devices_notified_ht = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                                               g_free, NULL);
+-- 
+2.53.0
+

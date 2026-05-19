@@ -1,0 +1,3651 @@
+From 1b3dcc365e167c031c0ac0eef7527319c530d8b8 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Thu, 5 Jun 2025 00:57:03 +0200
+Subject: [PATCH 01/10] power: Mock mutter with a custom dbusmock template
+
+The mutter we spawn for the tests is only used for Xsettings which is
+hard to mock. The rest of the APIs we need from mutter are available as
+dbus interfaces that we can mock.
+
+For now there isn't a lot of benefit, but in the next commit we will
+start to rely on the mutter backlight API and having it mocked means we
+don't have to figure out how to get backlights on a headless mutter
+instance.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gnome-settings-daemon/-/merge_requests/418>
+---
+ meson.build                                |   3 +-
+ plugins/power/dbusmock-templates/mutter.py | 138 +++++++++++++++++++++
+ plugins/power/meson.build                  |   1 +
+ plugins/power/test.py                      |  12 ++
+ 4 files changed, 153 insertions(+), 1 deletion(-)
+ create mode 100644 plugins/power/dbusmock-templates/mutter.py
+
+diff --git a/meson.build b/meson.build
+index a1d58a62..989f580f 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2,7 +2,7 @@ project(
+   'gnome-settings-daemon', 'c',
+   version: '47.2',
+   license: [ 'GPL2+', 'LGPLv2+' ],
+-  meson_version: '>= 0.57.0'
++  meson_version: '>= 0.64.0'
+ )
+ 
+ # Make sure the version always has a trailing N.0 so that
+@@ -252,6 +252,7 @@ endif
+ gnome = import('gnome')
+ i18n = import('i18n')
+ pkg = import('pkgconfig')
++fs = import('fs')
+ 
+ po_dir = join_paths(meson.project_source_root(), 'po')
+ 
+diff --git a/plugins/power/dbusmock-templates/mutter.py b/plugins/power/dbusmock-templates/mutter.py
+new file mode 100644
+index 00000000..e092fe67
+--- /dev/null
++++ b/plugins/power/dbusmock-templates/mutter.py
+@@ -0,0 +1,138 @@
++'''mutter proxy mock template
++'''
++
++# This program is free software; you can redistribute it and/or modify it under
++# the terms of the GNU Lesser General Public License as published by the Free
++# Software Foundation; either version 3 of the License, or (at your option) any
++# later version.  See http://www.gnu.org/copyleft/lgpl.html for the full text
++# of the license.
++
++
++__author__ = 'Sebastian Wick'
++__copyright__ = '(c) 2025 Red Hat Inc.'
++
++
++import dbus
++from dbusmock import MOCK_IFACE, mockobject
++
++
++BUS_NAME = 'org.gnome.Mutter.DisplayConfig'
++MAIN_OBJ = '/org/gnome/Mutter/DisplayConfig'
++MAIN_IFACE = 'org.gnome.Mutter.DisplayConfig'
++MOCK_IFACE = 'org.gnome.Mutter.DisplayConfig.Mock'
++SYSTEM_BUS = False
++
++
++def _wrap_in_dbus_variant(value):
++    dbus_types = [
++        dbus.types.ByteArray,
++        dbus.types.Int16,
++        dbus.types.ObjectPath,
++        dbus.types.Struct,
++        dbus.types.UInt64,
++        dbus.types.Boolean,
++        dbus.types.Dictionary,
++        dbus.types.Int32,
++        dbus.types.Signature,
++        dbus.types.UInt16,
++        dbus.types.UnixFd,
++        dbus.types.Byte,
++        dbus.types.Double,
++        dbus.types.Int64,
++        dbus.types.String,
++        dbus.types.UInt32,
++    ]
++    if isinstance(value, dbus.String):
++        return dbus.String(str(value), variant_level=1)
++    if isinstance(value, dbus.types.Array) or isinstance(value, dbus.types.Struct):
++        return value
++    if type(value) in dbus_types:
++        return type(value)(value.conjugate(), variant_level=1)
++    if isinstance(value, str):
++        return dbus.String(value, variant_level=1)
++    raise dbus.exceptions.DBusException(f"could not wrap type {type(value)}")
++
++
++# this is a fixed up version of the dbusmock method which works for Struct types
++def UpdateProperties(mock, interface, properties):
++    changed_props = {}
++
++    for name, value in properties.items():
++        if not interface:
++            interface = mock.interface
++        if name not in mock.props.get(interface, {}):
++            raise dbus.exceptions.DBusException(f"property {name} not found", name=interface + ".NoSuchProperty")
++
++        mock._set_property(interface, name, value)
++        changed_props[name] = _wrap_in_dbus_variant(value)
++
++    mock.EmitSignal(dbus.PROPERTIES_IFACE, "PropertiesChanged", "sa{sv}as", [interface, changed_props, []])
++
++
++def load(mock, parameters):
++    mock.serial = 1
++    mock.backlights = {}
++
++    mock.AddProperty(MAIN_IFACE, 'Backlight', backlights_to_dbus({}))
++    mock.AddProperty(MAIN_IFACE, 'PowerSaveMode', dbus.Int32(0))
++    mock.AddProperty(MAIN_IFACE, 'HasExternalMonitor', True)
++
++
++def backlights_to_dbus(backlights):
++    out = dbus.Array([], signature='a{sv}')
++    for connector, backlight in backlights.items():
++        b = dbus.Dictionary(backlight.copy(), signature='sv')
++        b['connector'] = dbus.String(connector)
++        out.append(b)
++    return out
++
++
++@dbus.service.method(
++    MAIN_IFACE,
++    in_signature='usi',
++    out_signature=''
++)
++def SetBacklight(self, serial, connector, value):
++    if serial != self.serial:
++        raise dbus.exceptions.DBusException("Invalid backlight serial")
++
++    if not connector in self.backlights:
++        raise dbus.exceptions.DBusException("Unknown backlight")
++
++    backlight = self.backlights[connector]
++
++    if value < backlight['min'] or value > backlight['max']:
++        raise dbus.exceptions.DBusException("Invalid backlight value")
++
++    backlight['value'] = value
++
++    UpdateProperties(self, MAIN_IFACE, {
++        'Backlight': dbus.Struct(
++            (dbus.UInt32(self.serial), backlights_to_dbus(self.backlights)),
++            signature='uaa{sv}',
++            variant_level=1
++        ),
++    })
++
++
++@dbus.service.method(
++    MOCK_IFACE,
++    in_signature='sbiii',
++    out_signature='',
++)
++def MockSetBacklight(self, connector, active, min, max, value):
++    self.backlights[connector] = {
++        'active': dbus.Boolean(active),
++        'min': dbus.Int32(min),
++        'max': dbus.Int32(max),
++        'value': dbus.Int32(value),
++    }
++
++    self.serial += 1
++    UpdateProperties(self, MAIN_IFACE, {
++        'Backlight': dbus.Struct(
++            (dbus.UInt32(self.serial), backlights_to_dbus(self.backlights)),
++            signature='uaa{sv}',
++            variant_level=1
++        ),
++    })
+diff --git a/plugins/power/meson.build b/plugins/power/meson.build
+index 187976b8..3416f15d 100644
+--- a/plugins/power/meson.build
++++ b/plugins/power/meson.build
+@@ -122,6 +122,7 @@ gsdpowerenums_py = custom_target(
+ )
+ 
+ test_py = find_program('test.py')
++fs.copyfile('dbusmock-templates/mutter.py')
+ 
+ envs = environment()
+ #envs.prepend('G_DEBUG', 'fatal-warnings')
+diff --git a/plugins/power/test.py b/plugins/power/test.py
+index 64d79ad0..e4159280 100755
+--- a/plugins/power/test.py
++++ b/plugins/power/test.py
+@@ -13,6 +13,7 @@ import math
+ import os
+ import os.path
+ import signal
++from pathlib import Path
+ 
+ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ builddir = os.environ.get('BUILDDIR', os.path.dirname(__file__))
+@@ -97,6 +98,17 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         self.addCleanup(self.cleanup_testbed)
+         os.environ['UMOCKDEV_DIR'] = self.testbed.get_root_dir()
+ 
++        # start mock mutter
++        template = (
++            Path(os.path.realpath(__file__)).parent
++            / "dbusmock-templates"
++            / "mutter.py"
++        )
++        assert template.exists()
++        assert template.suffix == ".py"
++        (self.mockmutter, self.obj_mockmutter) = self.spawn_server_template(template.absolute().as_posix())
++        self.addCleanup(self.stop_process, self.mockmutter)
++
+         # Create a mock backlight device
+         # Note that this function creates a different or even no backlight
+         # device based on the name of the test.
+-- 
+2.51.1
+
+
+From 1b45d43982f8d6acae1a158c7d252daf613bbe19 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Thu, 5 Jun 2025 00:58:46 +0200
+Subject: [PATCH 02/10] power: Only support mutter backlight control
+
+Mutter has taken over controlling the backlight of monitors entirely.
+The other backends in g-s-d are now obsolete and it has to call into
+mutter for every backlight change.
+
+The change here is not meant to be a functional change.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gnome-settings-daemon/-/merge_requests/418>
+---
+ plugins/power/gsd-backlight-helper.c          | 149 -----
+ plugins/power/gsd-backlight.c                 | 611 +++---------------
+ plugins/power/meson.build                     |  42 --
+ ...settings-daemon.plugins.power.policy.in.in |  32 -
+ plugins/power/test-backlight-helper           |   5 -
+ plugins/power/test.py                         | 150 +----
+ 6 files changed, 93 insertions(+), 896 deletions(-)
+ delete mode 100644 plugins/power/gsd-backlight-helper.c
+ delete mode 100644 plugins/power/org.gnome.settings-daemon.plugins.power.policy.in.in
+ delete mode 100755 plugins/power/test-backlight-helper
+
+diff --git a/plugins/power/gsd-backlight-helper.c b/plugins/power/gsd-backlight-helper.c
+deleted file mode 100644
+index f0fbbb59..00000000
+--- a/plugins/power/gsd-backlight-helper.c
++++ /dev/null
+@@ -1,149 +0,0 @@
+-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
+- *
+- * Copyright (C) 2018 Benjamin Berg <bberg@redhat.com>
+- *
+- * Licensed under the GNU General Public License Version 2
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+- */
+-
+-#include "config.h"
+-
+-#include <stdlib.h>
+-#include <dirent.h>
+-#include <errno.h>
+-#include <string.h>
+-#include <libgen.h>
+-#include <stdio.h>
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <fcntl.h>
+-#include <unistd.h>
+-
+-#define GSD_BACKLIGHT_HELPER_EXIT_CODE_SUCCESS			0
+-#define GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED			1
+-#define GSD_BACKLIGHT_HELPER_EXIT_CODE_ARGUMENTS_INVALID	3
+-#define GSD_BACKLIGHT_HELPER_EXIT_CODE_INVALID_USER		4
+-
+-#ifndef __linux__
+-#error "gsd-backlight-helper does not work on non-Linux"
+-#endif
+-
+-static void
+-usage(int argc, char *argv[])
+-{
+-	fprintf (stderr, "Usage: %s device brightness\n", argv[0]);
+-	fprintf (stderr, "  device:      The backlight directory starting with \"/sys/class/backlight/\"\n");
+-	fprintf (stderr, "  brightness:  The new brightness to write\n");
+-}
+-
+-int
+-main (int argc, char *argv[])
+-{
+-	char tmp[512];
+-	char *device = NULL;
+-	int fd, len, res;
+-	int uid, euid;
+-	int brightness;
+-	int result = GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED;
+-	DIR *dp = NULL;
+-	struct dirent *ep;
+-
+-	/* check calling UID */
+-	uid = getuid ();
+-	euid = geteuid ();
+-	if (uid != 0 || euid != 0) {
+-		fprintf (stderr, "This program can only be used by the root user\n");
+-		result = GSD_BACKLIGHT_HELPER_EXIT_CODE_INVALID_USER;
+-		goto done;
+-	}
+-
+-	if (argc != 3) {
+-		fprintf (stderr, "Error: Need to be called with exactly two arguments\n");
+-		usage (argc, argv);
+-		result = GSD_BACKLIGHT_HELPER_EXIT_CODE_ARGUMENTS_INVALID;
+-		goto done;
+-	}
+-
+-	errno = 0;
+-	brightness = strtol (argv[2], NULL, 0);
+-	if (errno) {
+-		fprintf (stderr, "Error: Invalid brightness argument (%d: %s)\n", errno, strerror (errno));
+-		usage (argc, argv);
+-		goto done;
+-	}
+-
+-	dp = opendir ("/sys/class/backlight");
+-	if (dp == NULL) {
+-		fprintf (stderr, "Error: Could not open /sys/class/backlight (%d: %s)\n", errno, strerror (errno));
+-		result = GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED;
+-		goto done;
+-	}
+-
+-	/* May be NULL if the path cannot be resolved */
+-	device = realpath (argv[1], NULL);
+-
+-	while ((ep = readdir (dp))) {
+-		char *path;
+-
+-		if (ep->d_name[0] == '.')
+-			continue;
+-
+-		/* Leave room for "/brightness" */
+-		snprintf (tmp, sizeof(tmp) - 11, "/sys/class/backlight/%s", ep->d_name);
+-		path = realpath (tmp, NULL);
+-		if (path && device && strcmp (path, device) == 0) {
+-			free (path);
+-			strcat (tmp, "/brightness");
+-
+-			fd = open (tmp, O_WRONLY);
+-			if (fd < 0) {
+-				fprintf (stderr, "Error: Could not open brightness sysfs file (%d: %s)\n", errno, strerror(errno));
+-				result = GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED;
+-				goto done;
+-			}
+-
+-			len = snprintf (tmp, sizeof(tmp), "%d", brightness);
+-			if ((res = write (fd, tmp, len)) != len) {
+-				if (res == -1)
+-					fprintf (stderr, "Error: Writing to file (%d: %s)\n", errno, strerror(errno));
+-				else
+-					fprintf (stderr, "Error: Wrote the wrong length (%d of %d bytes)!\n", res, len);
+-
+-				close (fd);
+-				result = GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED;
+-				goto done;
+-			}
+-			close (fd);
+-
+-			result = GSD_BACKLIGHT_HELPER_EXIT_CODE_SUCCESS;
+-			goto done;
+-		} else {
+-			free (path);
+-		}
+-	}
+-
+-	result = GSD_BACKLIGHT_HELPER_EXIT_CODE_FAILED;
+-	fprintf (stderr, "Error: Could not find the specified backlight \"%s\"\n", argv[1]);
+-
+-done:
+-	if (device)
+-		free (device);
+-	if (dp)
+-		closedir (dp);
+-
+-	return result;
+-}
+-
+diff --git a/plugins/power/gsd-backlight.c b/plugins/power/gsd-backlight.c
+index 70d259a3..a1fa2efb 100644
+--- a/plugins/power/gsd-backlight.c
++++ b/plugins/power/gsd-backlight.c
+@@ -27,17 +27,6 @@
+ #include "gsd-power-constants.h"
+ #include "gsd-power-manager.h"
+ 
+-#ifdef __linux__
+-#include <gudev/gudev.h>
+-#endif /* __linux__ */
+-
+-typedef enum
+-{
+-        BACKLIGHT_BACKEND_NONE = 0,
+-        BACKLIGHT_BACKEND_UDEV,
+-        BACKLIGHT_BACKEND_MUTTER,
+-} BacklightBackend;
+-
+ struct _GsdBacklight
+ {
+         GObject object;
+@@ -51,19 +40,7 @@ struct _GsdBacklight
+         uint32_t backlight_serial;
+         char *backlight_connector;
+ 
+-        BacklightBackend backend;
+-
+-#ifdef __linux__
+-        GDBusProxy *logind_proxy;
+-
+-        GUdevClient *udev;
+-        GUdevDevice *udev_device;
+-
+-        GTask *active_task;
+-        GQueue tasks;
+-
+-        gint idle_update;
+-#endif /* __linux__ */
++        gboolean initialized;
+ 
+         gboolean builtin_display_disabled;
+ };
+@@ -73,10 +50,6 @@ enum {
+         PROP_LAST,
+ };
+ 
+-#define SYSTEMD_DBUS_NAME                       "org.freedesktop.login1"
+-#define SYSTEMD_DBUS_PATH                       "/org/freedesktop/login1/session/auto"
+-#define SYSTEMD_DBUS_INTERFACE                  "org.freedesktop.login1.Session"
+-
+ #define MUTTER_DBUS_NAME                       "org.gnome.Mutter.DisplayConfig"
+ #define MUTTER_DBUS_PATH                       "/org/gnome/Mutter/DisplayConfig"
+ #define MUTTER_DBUS_INTERFACE                  "org.gnome.Mutter.DisplayConfig"
+@@ -88,342 +61,9 @@ static gboolean gsd_backlight_initable_init       (GInitable       *initable,
+                                                    GCancellable    *cancellable,
+                                                    GError         **error);
+ 
+-
+ G_DEFINE_TYPE_EXTENDED (GsdBacklight, gsd_backlight, G_TYPE_OBJECT, 0,
+                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
+-                                               gsd_backlight_initable_iface_init);)
+-
+-#ifdef __linux__
+-static GUdevDevice*
+-gsd_backlight_udev_get_type (GList *devices, const gchar *type)
+-{
+-        const gchar *type_tmp;
+-        GList *d;
+-
+-        for (d = devices; d != NULL; d = d->next) {
+-                type_tmp = g_udev_device_get_sysfs_attr (d->data, "type");
+-                if (g_strcmp0 (type_tmp, type) == 0)
+-                        return G_UDEV_DEVICE (g_object_ref (d->data));
+-        }
+-        return NULL;
+-}
+-
+-/*
+- * Search for a raw backlight interface, raw backlight interfaces registered
+- * by the drm driver will have the drm-connector as their parent, check the
+- * drm-connector's enabled sysfs attribute so that we pick the right LCD-panel
+- * connector on laptops with hybrid-gfx. Fall back to just picking the first
+- * raw backlight interface if no enabled interface is found.
+- */
+-static GUdevDevice*
+-gsd_backlight_udev_get_raw (GList *devices)
+-{
+-        GUdevDevice *parent;
+-        const gchar *attr;
+-        GList *d;
+-
+-        for (d = devices; d != NULL; d = d->next) {
+-                attr = g_udev_device_get_sysfs_attr (d->data, "type");
+-                if (g_strcmp0 (attr, "raw") != 0)
+-                        continue;
+-
+-                parent = g_udev_device_get_parent (d->data);
+-                if (!parent)
+-                        continue;
+-
+-                attr = g_udev_device_get_sysfs_attr (parent, "enabled");
+-                if (!attr || g_strcmp0 (attr, "enabled") != 0)
+-                        continue;
+-
+-                return G_UDEV_DEVICE (g_object_ref (d->data));
+-        }
+-
+-        return gsd_backlight_udev_get_type (devices, "raw");
+-}
+-
+-static void
+-gsd_backlight_udev_resolve (GsdBacklight *backlight)
+-{
+-        g_autolist(GUdevDevice) devices = NULL;
+-
+-        g_assert (backlight->udev != NULL);
+-
+-        devices = g_udev_client_query_by_subsystem (backlight->udev, "backlight");
+-        if (devices == NULL)
+-                return;
+-
+-        /* Search the backlight devices and prefer the types:
+-         * firmware -> platform -> raw */
+-        backlight->udev_device = gsd_backlight_udev_get_type (devices, "firmware");
+-        if (backlight->udev_device != NULL)
+-                return;
+-
+-        backlight->udev_device = gsd_backlight_udev_get_type (devices, "platform");
+-        if (backlight->udev_device != NULL)
+-                return;
+-
+-        backlight->udev_device = gsd_backlight_udev_get_raw (devices);
+-        if (backlight->udev_device != NULL)
+-                return;
+-}
+-
+-static gboolean
+-gsd_backlight_udev_idle_update_cb (GsdBacklight *backlight)
+-{
+-        g_autoptr(GError) error = NULL;
+-        gint brightness;
+-        g_autofree gchar *path = NULL;
+-        g_autofree gchar *contents = NULL;
+-        backlight->idle_update = 0;
+-
+-        /* If we are active again now, just stop. */
+-        if (backlight->active_task)
+-                return FALSE;
+-
+-        path = g_build_filename (g_udev_device_get_sysfs_path (backlight->udev_device), "brightness", NULL);
+-        if (!g_file_get_contents (path, &contents, NULL, &error)) {
+-                g_warning ("Could not get brightness from sysfs: %s", error->message);
+-                return FALSE;
+-        }
+-        brightness = g_ascii_strtoll (contents, NULL, 0);
+-
+-        /* e.g. brightness lower than our minimum. */
+-        brightness = CLAMP (brightness, backlight->brightness_min, backlight->brightness_max);
+-
+-        /* Only notify if brightness has changed. */
+-        if (brightness == backlight->brightness_val)
+-                return FALSE;
+-
+-        backlight->brightness_val = brightness;
+-        backlight->brightness_target = brightness;
+-        g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
+-
+-        return FALSE;
+-}
+-
+-static void
+-gsd_backlight_udev_idle_update (GsdBacklight *backlight)
+-{
+-        if (backlight->idle_update)
+-                return;
+-
+-        backlight->idle_update = g_idle_add ((GSourceFunc) gsd_backlight_udev_idle_update_cb, backlight);
+-}
+-
+-
+-static void
+-gsd_backlight_udev_uevent (GUdevClient *client, const gchar *action, GUdevDevice *device, gpointer user_data)
+-{
+-        GsdBacklight *backlight = GSD_BACKLIGHT (user_data);
+-
+-        if (g_strcmp0 (action, "change") != 0)
+-                return;
+-
+-        /* We are going to update our state after processing the tasks anyway. */
+-        if (!g_queue_is_empty (&backlight->tasks))
+-                return;
+-
+-        if (g_strcmp0 (g_udev_device_get_sysfs_path (device),
+-                       g_udev_device_get_sysfs_path (backlight->udev_device)) != 0)
+-                return;
+-
+-        g_debug ("GsdBacklight: Got uevent");
+-
+-        gsd_backlight_udev_idle_update (backlight);
+-}
+-
+-
+-static gboolean
+-gsd_backlight_udev_init (GsdBacklight *backlight)
+-{
+-        const gchar* const subsystems[] = {"backlight", NULL};
+-        gint brightness_val;
+-
+-        backlight->udev = g_udev_client_new (subsystems);
+-        gsd_backlight_udev_resolve (backlight);
+-        if (backlight->udev_device == NULL)
+-                return FALSE;
+-
+-        backlight->brightness_max = g_udev_device_get_sysfs_attr_as_int (backlight->udev_device,
+-                                                                         "max_brightness");
+-        backlight->brightness_min = MAX (1, backlight->brightness_max * 0.01);
+-
+-        /* If the interface has less than 100 possible values, and it is of type
+-         * raw, then assume that 0 does not turn off the backlight completely. */
+-        if (backlight->brightness_max < 99 &&
+-            g_strcmp0 (g_udev_device_get_sysfs_attr (backlight->udev_device, "type"), "raw") == 0)
+-                backlight->brightness_min = 0;
+-
+-        /* Ignore a backlight which has no steps. */
+-        if (backlight->brightness_min >= backlight->brightness_max) {
+-                g_warning ("Resolved kernel backlight has an unusable maximum brightness (%d)", backlight->brightness_max);
+-                g_clear_object (&backlight->udev_device);
+-                return FALSE;
+-        }
+-
+-        brightness_val = g_udev_device_get_sysfs_attr_as_int (backlight->udev_device,
+-                                                              "brightness");
+-        backlight->brightness_val = CLAMP (brightness_val,
+-                                           backlight->brightness_min,
+-                                           backlight->brightness_max);
+-        g_debug ("Using udev device with brightness from %i to %i. Current brightness is %i.",
+-                 backlight->brightness_min, backlight->brightness_max, backlight->brightness_val);
+-
+-        g_signal_connect_object (backlight->udev, "uevent",
+-                                 G_CALLBACK (gsd_backlight_udev_uevent),
+-                                 backlight, 0);
+-
+-        backlight->backend = BACKLIGHT_BACKEND_UDEV;
+-
+-        return TRUE;
+-}
+-
+-
+-typedef struct {
+-        int value;
+-        char *value_str;
+-} BacklightHelperData;
+-
+-static void gsd_backlight_process_taskqueue (GsdBacklight *backlight);
+-
+-static void
+-backlight_task_data_destroy (gpointer data)
+-{
+-        BacklightHelperData *task_data = (BacklightHelperData*) data;
+-
+-        g_free (task_data->value_str);
+-        g_free (task_data);
+-}
+-
+-static void
+-gsd_backlight_set_helper_return (GsdBacklight *backlight, GTask *task, gint result, const GError *error)
+-{
+-        GTask *finished_task;
+-        gint percent = ABS_TO_PERCENTAGE (backlight->brightness_min, backlight->brightness_max, result);
+-
+-        if (error)
+-                g_warning ("Error executing backlight helper: %s", error->message);
+-
+-        /* If the queue will be empty then update the current value. */
+-        if (task == g_queue_peek_tail (&backlight->tasks)) {
+-                if (error == NULL) {
+-                        g_assert (backlight->brightness_target == result);
+-
+-                        backlight->brightness_val = backlight->brightness_target;
+-                        g_debug ("New brightness value is in effect %i (%i..%i)",
+-                                 backlight->brightness_val, backlight->brightness_min, backlight->brightness_max);
+-                        g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
+-                }
+-
+-                /* The udev handler won't read while a write is pending, so queue an
+-                 * update in case we have missed some events. */
+-                gsd_backlight_udev_idle_update (backlight);
+-        }
+-
+-        /* Return all the pending tasks up and including the one we actually
+-         * processed. */
+-        do {
+-                finished_task = g_queue_pop_head (&backlight->tasks);
+-
+-                if (error)
+-                        g_task_return_error (finished_task, g_error_copy (error));
+-                else
+-                        g_task_return_int (finished_task, percent);
+-
+-                g_object_unref (finished_task);
+-        } while (finished_task != task);
+-}
+-
+-static void
+-gsd_backlight_set_helper_finish (GObject *obj, GAsyncResult *res, gpointer user_data)
+-{
+-        g_autoptr(GSubprocess) proc = G_SUBPROCESS (obj);
+-        GTask *task = G_TASK (user_data);
+-        BacklightHelperData *data = g_task_get_task_data (task);
+-        GsdBacklight *backlight = g_task_get_source_object (task);
+-        g_autoptr(GError) error = NULL;
+-
+-        g_assert (task == backlight->active_task);
+-        backlight->active_task = NULL;
+-
+-        g_subprocess_wait_check_finish (proc, res, &error);
+-
+-        if (error)
+-                goto done;
+-
+-done:
+-        gsd_backlight_set_helper_return (backlight, task, data->value, error);
+-        /* Start processing any tasks that were added in the meantime. */
+-        gsd_backlight_process_taskqueue (backlight);
+-}
+-
+-static void
+-gsd_backlight_run_set_helper (GsdBacklight *backlight, GTask *task)
+-{
+-        GSubprocess *proc = NULL;
+-        BacklightHelperData *data = g_task_get_task_data (task);
+-        const gchar *gsd_backlight_helper = NULL;
+-        GError *error = NULL;
+-
+-        g_assert (backlight->active_task == NULL);
+-        backlight->active_task = task;
+-
+-        if (data->value_str == NULL)
+-                data->value_str = g_strdup_printf ("%d", data->value);
+-
+-        /* This is solely for use by the test environment. If given, execute
+-         * this helper instead of the internal helper using pkexec */
+-        gsd_backlight_helper = g_getenv ("GSD_BACKLIGHT_HELPER");
+-        if (!gsd_backlight_helper) {
+-                proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_SILENCE,
+-                                         &error,
+-                                         "pkexec",
+-                                         LIBEXECDIR "/gsd-backlight-helper",
+-                                         g_udev_device_get_sysfs_path (backlight->udev_device),
+-                                         data->value_str, NULL);
+-        } else {
+-                proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_SILENCE,
+-                                         &error,
+-                                         gsd_backlight_helper,
+-                                         g_udev_device_get_sysfs_path (backlight->udev_device),
+-                                         data->value_str, NULL);
+-        }
+-
+-        if (proc == NULL) {
+-                gsd_backlight_set_helper_return (backlight, task, -1, error);
+-                return;
+-        }
+-
+-        g_subprocess_wait_check_async (proc, g_task_get_cancellable (task),
+-                                       gsd_backlight_set_helper_finish,
+-                                       task);
+-}
+-
+-static void
+-gsd_backlight_process_taskqueue (GsdBacklight *backlight)
+-{
+-        GTask *to_run;
+-
+-        /* There is already a task active, nothing to do. */
+-        if (backlight->active_task)
+-                return;
+-
+-        /* Get the last added task, thereby compressing the updates into one. */
+-        to_run = G_TASK (g_queue_peek_tail (&backlight->tasks));
+-        if (to_run == NULL)
+-                return;
+-
+-        /* And run it! */
+-        gsd_backlight_run_set_helper (backlight, to_run);
+-}
+-#endif /* __linux__ */
+-
+-static const char *
+-gsd_backlight_mutter_find_monitor (GsdBacklight *backlight,
+-                                   gboolean      controllable)
+-{
+-        return backlight->backlight_connector;
+-}
++                                               gsd_backlight_initable_iface_init))
+ 
+ /**
+  * gsd_backlight_get_brightness
+@@ -448,12 +88,37 @@ gsd_backlight_get_brightness (GsdBacklight *backlight, gint *target)
+         if (backlight->builtin_display_disabled)
+                 return -1;
+ 
+-        if (target)
+-                *target = ABS_TO_PERCENTAGE (backlight->brightness_min, backlight->brightness_max, backlight->brightness_target);
++        return ABS_TO_PERCENTAGE (backlight->brightness_min,
++                                  backlight->brightness_max,
++                                  backlight->brightness_val);
++}
++
++/**
++ * gsd_backlight_get_target_brightness
++ * @backlight: a #GsdBacklight
++ *
++ * This returns the target value of the pending operations, which might differ
++ * from the last known stable value, but is identical to the last value set in
++ * the async setter.
++ *
++ * If the internal display is detected as disabled, then the function will
++ * instead return -1.
++ *
++ * Returns: The current target backlight value or -1 if the internal display is disabled.
++ **/
++gint
++gsd_backlight_get_target_brightness (GsdBacklight *backlight)
++{
++        if (backlight->builtin_display_disabled)
++                return -1;
+ 
+-        return ABS_TO_PERCENTAGE (backlight->brightness_min, backlight->brightness_max, backlight->brightness_val);
++        return ABS_TO_PERCENTAGE (backlight->brightness_min,
++                                  backlight->brightness_max,
++                                  backlight->brightness_target);
+ }
+ 
++static void update_mutter_backlight (GsdBacklight *backlight);
++
+ static void
+ gsd_backlight_set_brightness_val_async (GsdBacklight *backlight,
+                                         int value,
+@@ -462,9 +127,10 @@ gsd_backlight_set_brightness_val_async (GsdBacklight *backlight,
+                                         gpointer user_data)
+ {
+         GError *error = NULL;
+-        GTask *task = NULL;
++        g_autoptr(GTask) task = NULL;
+         const char *monitor;
+-        gint percent;
++        GsdDisplayConfig *display_config =
++                gnome_settings_bus_get_display_config_proxy ();
+ 
+         value = MIN(backlight->brightness_max, value);
+         value = MAX(backlight->brightness_min, value);
+@@ -472,80 +138,47 @@ gsd_backlight_set_brightness_val_async (GsdBacklight *backlight,
+         backlight->brightness_target = value;
+ 
+         task = g_task_new (backlight, cancellable, callback, user_data);
+-        if (backlight->backend == BACKLIGHT_BACKEND_NONE) {
++        if (!backlight->initialized) {
+                 g_task_return_new_error (task, GSD_POWER_MANAGER_ERROR,
+                                          GSD_POWER_MANAGER_ERROR_FAILED,
+                                          "No backend initialized yet");
+-                g_object_unref (task);
+                 return;
+         }
+ 
+-#ifdef __linux__
+-        if (backlight->backend == BACKLIGHT_BACKEND_UDEV) {
+-                BacklightHelperData *task_data;
+-
+-                if (backlight->logind_proxy) {
+-                        g_dbus_proxy_call (backlight->logind_proxy,
+-                                           "SetBrightness",
+-                                           g_variant_new ("(ssu)",
+-                                                          "backlight",
+-                                                          g_udev_device_get_name (backlight->udev_device),
+-                                                          backlight->brightness_target),
+-                                           G_DBUS_CALL_FLAGS_NONE,
+-                                           -1, NULL,
+-                                           NULL, NULL);
+-
+-                        percent = ABS_TO_PERCENTAGE (backlight->brightness_min,
+-                                                     backlight->brightness_max,
+-                                                     backlight->brightness_target);
+-                        g_task_return_int (task, percent);
+-                } else {
+-                        task_data = g_new0 (BacklightHelperData, 1);
+-                        task_data->value = backlight->brightness_target;
+-                        g_task_set_task_data (task, task_data, backlight_task_data_destroy);
+-
+-                        /* Task is set up now. Queue it and ensure we are working something. */
+-                        g_queue_push_tail (&backlight->tasks, task);
+-                        gsd_backlight_process_taskqueue (backlight);
+-                }
++        monitor = backlight->backlight_connector;
++        if (!monitor) {
++                g_assert_not_reached ();
+ 
++                g_task_return_new_error (task, GSD_POWER_MANAGER_ERROR,
++                                         GSD_POWER_MANAGER_ERROR_FAILED,
++                                         "No method to set brightness!");
+                 return;
+         }
+-#endif /* __linux__ */
+-
+-        /* Fallback to setting via DisplayConfig (mutter) */
+-        g_assert (backlight->backend == BACKLIGHT_BACKEND_MUTTER);
+-
+-        monitor = gsd_backlight_mutter_find_monitor (backlight, TRUE);
+-        if (monitor) {
+-                GsdDisplayConfig *display_config =
+-                        gnome_settings_bus_get_display_config_proxy ();
+-
+-                if (!gsd_display_config_call_set_backlight_sync (display_config,
+-                                                                 backlight->backlight_serial,
+-                                                                 monitor,
+-                                                                 value,
+-                                                                 NULL,
+-                                                                 &error)) {
++
++        while (TRUE) {
++                uint32_t serial = backlight->backlight_serial;
++
++                g_clear_error (&error);
++
++                if (gsd_display_config_call_set_backlight_sync (display_config,
++                                                                serial,
++                                                                monitor,
++                                                                value,
++                                                                NULL,
++                                                                &error))
++                        break;
++
++                update_mutter_backlight (backlight);
++                if (backlight->backlight_serial == serial) {
+                         g_task_return_error (task, error);
+-                        g_object_unref (task);
+                         return;
+                 }
+-
+-                backlight->brightness_val = value;
+-                g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
+-                g_task_return_int (task, gsd_backlight_get_brightness (backlight, NULL));
+-                g_object_unref (task);
+-
+-                return;
+         }
+ 
+-        g_assert_not_reached ();
++        backlight->brightness_val = value;
++        g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
++        g_task_return_int (task, gsd_backlight_get_brightness (backlight));
+ 
+-        g_task_return_new_error (task, GSD_POWER_MANAGER_ERROR,
+-                                 GSD_POWER_MANAGER_ERROR_FAILED,
+-                                 "No method to set brightness!");
+-        g_object_unref (task);
+ }
+ 
+ void
+@@ -557,7 +190,9 @@ gsd_backlight_set_brightness_async (GsdBacklight *backlight,
+ {
+         /* Overflow/underflow is handled by gsd_backlight_set_brightness_val_async. */
+         gsd_backlight_set_brightness_val_async (backlight,
+-                                                PERCENTAGE_TO_ABS (backlight->brightness_min, backlight->brightness_max, percent),
++                                                PERCENTAGE_TO_ABS (backlight->brightness_min,
++                                                                   backlight->brightness_max,
++                                                                   percent),
+                                                 cancellable,
+                                                 callback,
+                                                 user_data);
+@@ -695,17 +330,18 @@ gsd_backlight_cycle_up_async (GsdBacklight *backlight,
+                               GAsyncReadyCallback callback,
+                               gpointer user_data)
+ {
+-        if (backlight->brightness_target < backlight->brightness_max)
++        if (backlight->brightness_target < backlight->brightness_max) {
+                 gsd_backlight_step_up_async (backlight,
+                                              cancellable,
+                                              callback,
+                                              user_data);
+-        else
++        } else {
+                 gsd_backlight_set_brightness_val_async (backlight,
+                                                         backlight->brightness_min,
+                                                         cancellable,
+                                                         callback,
+                                                         user_data);
++        }
+ }
+ 
+ /**
+@@ -780,7 +416,6 @@ update_mutter_backlight (GsdBacklight *backlight)
+         g_autoptr(GVariant) monitors = NULL;
+         g_autoptr(GVariant) monitor = NULL;
+         gboolean monitor_active = FALSE;
+-        gboolean have_backlight = FALSE;
+ 
+         backlights = gsd_display_config_get_backlight (display_config);
+         g_return_if_fail (backlights != NULL);
+@@ -802,26 +437,16 @@ update_mutter_backlight (GsdBacklight *backlight)
+                 g_variant_lookup (monitor, "active", "b", &monitor_active);
+                 backlight->builtin_display_disabled = !monitor_active;
+ 
+-                switch (backlight->backend) {
+-                case BACKLIGHT_BACKEND_NONE:
+-                case BACKLIGHT_BACKEND_MUTTER:
+-                        if (g_variant_lookup (monitor, "value", "i", &backlight->brightness_val)) {
+-                                g_variant_lookup (monitor, "min", "i", &backlight->brightness_min);
+-                                g_variant_lookup (monitor, "max", "i", &backlight->brightness_max);
+-                                have_backlight = TRUE;
+-                                backlight->backend = BACKLIGHT_BACKEND_MUTTER;
+-                        }
+-                        break;
+-                case BACKLIGHT_BACKEND_UDEV:
+-                        break;
++                if (g_variant_lookup (monitor, "value", "i", &backlight->brightness_val)) {
++                        g_variant_lookup (monitor, "min", "i", &backlight->brightness_min);
++                        g_variant_lookup (monitor, "max", "i", &backlight->brightness_max);
++                        backlight->initialized = TRUE;
++                } else {
++                        backlight->brightness_val = -1;
++                        backlight->brightness_min = -1;
++                        backlight->brightness_max = -1;
+                 }
+         }
+-
+-        if (!have_backlight && backlight->backend == BACKLIGHT_BACKEND_MUTTER) {
+-                backlight->brightness_val = -1;
+-                backlight->brightness_min = -1;
+-                backlight->brightness_max = -1;
+-        }
+ }
+ 
+ static void
+@@ -857,7 +482,6 @@ gsd_backlight_initable_init (GInitable       *initable,
+         GsdBacklight *backlight = GSD_BACKLIGHT (initable);
+         GsdDisplayConfig *display_config =
+                 gnome_settings_bus_get_display_config_proxy ();
+-        GError *logind_error = NULL;
+ 
+         if (cancellable != NULL) {
+                 g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+@@ -884,92 +508,16 @@ gsd_backlight_initable_init (GInitable       *initable,
+                                  G_CONNECT_SWAPPED);
+         maybe_update_mutter_backlight (backlight);
+ 
+-#ifdef __linux__
+-        backlight->logind_proxy =
+-                g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+-                                               0,
+-                                               NULL,
+-                                               SYSTEMD_DBUS_NAME,
+-                                               SYSTEMD_DBUS_PATH,
+-                                               SYSTEMD_DBUS_INTERFACE,
+-                                               NULL, &logind_error);
+-        if (backlight->logind_proxy) {
+-                /* Check that the SetBrightness method does exist */
+-                g_dbus_proxy_call_sync (backlight->logind_proxy,
+-                                        "SetBrightness", NULL,
+-                                        G_DBUS_CALL_FLAGS_NONE, -1,
+-                                        NULL, &logind_error);
+-
+-                if (g_error_matches (logind_error, G_DBUS_ERROR,
+-                                     G_DBUS_ERROR_INVALID_ARGS)) {
+-                        /* We are calling the method with no arguments, so
+-                         * this is expected.
+-                         */
+-                        g_clear_error (&logind_error);
+-                } else if (g_error_matches (logind_error, G_DBUS_ERROR,
+-                                            G_DBUS_ERROR_UNKNOWN_METHOD)) {
+-                        /* systemd version is too old, so ignore.
+-                         */
+-                        g_clear_error (&logind_error);
+-                        g_clear_object (&backlight->logind_proxy);
+-                } else {
+-                        /* Fail on anything else */
+-                        g_clear_object (&backlight->logind_proxy);
+-                }
+-        }
+-
+-        if (logind_error) {
+-                g_warning ("No logind found: %s", logind_error->message);
+-                g_error_free (logind_error);
+-        }
+-
+-        /* Try finding a udev device. */
+-        if (gsd_backlight_udev_init (backlight)) {
+-                g_assert (backlight->backend == BACKLIGHT_BACKEND_UDEV);
+-                goto found;
+-        }
+-#endif /* __linux__ */
+-
+-        if (backlight->backend == BACKLIGHT_BACKEND_MUTTER) {
+-                g_debug ("Using DisplayConfig (mutter) for backlight.");
+-                goto found;
+-        }
+-
+-        g_debug ("No usable backlight found.");
+-
+-        g_set_error_literal (error, GSD_POWER_MANAGER_ERROR, GSD_POWER_MANAGER_ERROR_NO_BACKLIGHT,
+-                             "No usable backlight could be found!");
+-
+-        return FALSE;
+-
+-found:
+         backlight->brightness_target = backlight->brightness_val;
+-        backlight->brightness_step = MAX(backlight->brightness_step, BRIGHTNESS_STEP_AMOUNT(backlight->brightness_max - backlight->brightness_min + 1));
++        backlight->brightness_step =
++                MAX(backlight->brightness_step,
++                    BRIGHTNESS_STEP_AMOUNT(backlight->brightness_max - backlight->brightness_min + 1));
+ 
+         g_debug ("Step size for backlight is %i.", backlight->brightness_step);
+ 
+         return TRUE;
+ }
+ 
+-static void
+-gsd_backlight_finalize (GObject *object)
+-{
+-        GsdBacklight *backlight = GSD_BACKLIGHT (object);
+-
+-#ifdef __linux__
+-        g_assert (backlight->active_task == NULL);
+-        g_assert (g_queue_is_empty (&backlight->tasks));
+-        g_clear_object (&backlight->logind_proxy);
+-        g_clear_pointer (&backlight->backlight_connector, g_free);
+-        g_clear_object (&backlight->udev);
+-        g_clear_object (&backlight->udev_device);
+-        if (backlight->idle_update) {
+-                g_source_remove (backlight->idle_update);
+-                backlight->idle_update = 0;
+-        }
+-#endif /* __linux__ */
+-}
+-
+ static void
+ gsd_backlight_initable_iface_init (GInitableIface *iface)
+ {
+@@ -981,7 +529,6 @@ gsd_backlight_class_init (GsdBacklightClass *klass)
+ {
+         GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
+-        object_class->finalize = gsd_backlight_finalize;
+         object_class->get_property = gsd_backlight_get_property;
+ 
+         props[PROP_BRIGHTNESS] = g_param_spec_int ("brightness", "The display brightness",
+@@ -992,7 +539,6 @@ gsd_backlight_class_init (GsdBacklightClass *klass)
+         g_object_class_install_properties (object_class, PROP_LAST, props);
+ }
+ 
+-
+ static void
+ gsd_backlight_init (GsdBacklight *backlight)
+ {
+@@ -1001,11 +547,6 @@ gsd_backlight_init (GsdBacklight *backlight)
+         backlight->brightness_max = -1;
+         backlight->brightness_val = -1;
+         backlight->brightness_step = 1;
+-
+-#ifdef __linux__
+-        backlight->active_task = NULL;
+-        g_queue_init (&backlight->tasks);
+-#endif /* __linux__ */
+ }
+ 
+ GsdBacklight *
+diff --git a/plugins/power/meson.build b/plugins/power/meson.build
+index 3416f15d..e44f8ce9 100644
+--- a/plugins/power/meson.build
++++ b/plugins/power/meson.build
+@@ -66,41 +66,6 @@ gsd_power_enums_update = executable(
+   native: true
+ )
+ 
+-if host_is_linux
+-  policy = 'org.gnome.settings-daemon.plugins.power.policy'
+-
+-  policy_in = configure_file(
+-    input: policy + '.in.in',
+-    output: policy + '.in',
+-    configuration: plugins_conf
+-  )
+-
+-  i18n.merge_file(
+-    input: policy_in,
+-    output: policy,
+-    po_dir: po_dir,
+-    install: true,
+-    install_dir: join_paths(gsd_datadir, 'polkit-1', 'actions')
+-  )
+-
+-  sources = files(
+-    'gsd-backlight-helper.c',
+-  )
+-
+-  deps = [
+-  ]
+-
+-  executable(
+-    'gsd-backlight-helper',
+-    sources,
+-    include_directories: top_inc,
+-    dependencies: deps,
+-    install: true,
+-    install_rpath: gsd_pkglibdir,
+-    install_dir: gsd_libexecdir
+-  )
+-endif
+-
+ output = 'gsdpowerconstants.py'
+ 
+ gsdpowerconstants_py = custom_target(
+@@ -128,14 +93,7 @@ envs = environment()
+ #envs.prepend('G_DEBUG', 'fatal-warnings')
+ envs.set('BUILDDIR', meson.current_build_dir())
+ envs.set('TOP_BUILDDIR', meson.project_build_root())
+-envs.set('LD_PRELOAD', 'libumockdev-preload.so.0')
+ envs.set('NO_AT_BRIDGE', '1')
+-envs.set('HAVE_SYSFS_BACKLIGHT', host_is_linux ? '1' : '0')
+-
+-if get_option('b_sanitize').split(',').contains('address')
+-  # libasan needs to be loaded first; so we need to explicitly preload it
+-  envs.set('POWER_LD_PRELOAD', 'libasan.so.5')
+-endif
+ 
+ tests = [
+   'Screensaver',
+diff --git a/plugins/power/org.gnome.settings-daemon.plugins.power.policy.in.in b/plugins/power/org.gnome.settings-daemon.plugins.power.policy.in.in
+deleted file mode 100644
+index f16300f8..00000000
+--- a/plugins/power/org.gnome.settings-daemon.plugins.power.policy.in.in
++++ /dev/null
+@@ -1,32 +0,0 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<!DOCTYPE policyconfig PUBLIC
+- "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+- "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+-<policyconfig>
+-
+-  <!--
+-    Policy definitions for gnome-settings-daemon system-wide actions.
+-    Copyright (c) 2010-2011 Richard Hughes <richard@hughsie.com>
+-  -->
+-
+-  <vendor>GNOME Settings Daemon</vendor>
+-  <vendor_url>http://git.gnome.org/browse/gnome-settings-daemon</vendor_url>
+-  <icon_name>battery</icon_name>
+-
+-  <action id="org.gnome.settings-daemon.plugins.power.backlight-helper">
+-    <!-- SECURITY:
+-          - A normal active user on the local machine does not need permission
+-            to change the backlight brightness.
+-     -->
+-    <description>Modify the laptop brightness</description>
+-    <message>Authentication is required to modify the laptop brightness</message>
+-    <defaults>
+-      <allow_any>no</allow_any>
+-      <allow_inactive>no</allow_inactive>
+-      <allow_active>yes</allow_active>
+-    </defaults>
+-    <annotate key="org.freedesktop.policykit.exec.path">@libexecdir@/gsd-backlight-helper</annotate>
+-  </action>
+-
+-</policyconfig>
+-
+diff --git a/plugins/power/test-backlight-helper b/plugins/power/test-backlight-helper
+deleted file mode 100755
+index 2dceacd8..00000000
+--- a/plugins/power/test-backlight-helper
++++ /dev/null
+@@ -1,5 +0,0 @@
+-#!/bin/sh
+-
+-# Simulate a slow call and just write the given brightness value to the device
+-sleep 0.2
+-echo "$2" >"$1/brightness"
+diff --git a/plugins/power/test.py b/plugins/power/test.py
+index e4159280..4cfd9184 100755
+--- a/plugins/power/test.py
++++ b/plugins/power/test.py
+@@ -32,12 +32,10 @@ DBusGMainLoop(set_as_default=True)
+ 
+ import gi
+ gi.require_version('UPowerGlib', '1.0')
+-gi.require_version('UMockdev', '1.0')
+ 
+ from gi.repository import Gio
+ from gi.repository import GLib
+ from gi.repository import UPowerGlib
+-from gi.repository import UMockdev
+ 
+ # There must be a better way to do a version comparison ... but this works
+ mutter_version = subprocess.run(['mutter', '--version'], stdout=subprocess.PIPE).stdout.decode().strip()
+@@ -93,11 +91,6 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         self.start_logind()
+         self.addCleanup(self.stop_logind)
+ 
+-        # Setup umockdev testbed
+-        self.testbed = UMockdev.Testbed.new()
+-        self.addCleanup(self.cleanup_testbed)
+-        os.environ['UMOCKDEV_DIR'] = self.testbed.get_root_dir()
+-
+         # start mock mutter
+         template = (
+             Path(os.path.realpath(__file__)).parent
+@@ -109,15 +102,10 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         (self.mockmutter, self.obj_mockmutter) = self.spawn_server_template(template.absolute().as_posix())
+         self.addCleanup(self.stop_process, self.mockmutter)
+ 
+-        # Create a mock backlight device
+-        # Note that this function creates a different or even no backlight
+-        # device based on the name of the test.
+-        self.add_backlight()
+-
+-        if 'HAVE_SYSFS_BACKLIGHT' in os.environ and os.environ['HAVE_SYSFS_BACKLIGHT'] == '1':
+-            self.skip_sysfs_backlight = False
++        if 'legacy_brightness' in self.id():
++            self.obj_mockmutter.MockSetBacklight('dp-1', True, 0, 15, 15)
+         else:
+-            self.skip_sysfs_backlight = True
++            self.obj_mockmutter.MockSetBacklight('dp-1', True, 0, 100, 50)
+ 
+         # start mock upowerd
+         (self.upowerd, self.obj_upower) = self.spawn_server_template(
+@@ -187,9 +175,6 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+ 
+         self.p_notify_log.clear()
+ 
+-    def cleanup_testbed(self):
+-        del self.testbed
+-
+     def delete_external_monitor_file(self):
+         try:
+             os.unlink(self.mock_external_monitor_file)
+@@ -219,44 +204,17 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+     def get_status(self):
+         return self.obj_session_presence_props.Get('org.gnome.SessionManager.Presence', 'status')
+ 
+-    def backlight_defaults(self):
+-        # Hack to modify the brightness defaults before starting gsd-power.
+-        # The alternative would be to create two separate test files.
+-        if 'no_backlight' in self.id():
+-            return None, None
+-        elif 'legacy_brightness' in self.id():
+-            return 15, 15
+-        else:
+-            return 100, 50
+-
+-    def add_backlight(self, _type="raw"):
+-        max_brightness, brightness = self.backlight_defaults()
+-
+-        if max_brightness is None:
+-            self.backlight = None
+-            return
+-
+-        # Undo mangling done in GSD
+-        if max_brightness >= 99:
+-            max_brightness += 1
+-            brightness += 1
+-
+-        # This needs to be done before starting gsd-power!
+-        self.backlight = self.testbed.add_device('backlight', 'mock_backlight', None,
+-                                                 ['type', _type,
+-                                                  'max_brightness', str(max_brightness),
+-                                                  'brightness', str(brightness)],
+-                                                 [])
+-
+     def get_brightness(self):
+-        max_brightness = int(open(os.path.join(self.testbed.get_root_dir() + self.backlight, 'max_brightness')).read())
++        (serial, bl) = self.obj_mockmutter.Get('org.gnome.Mutter.DisplayConfig', 'Backlight')
++        assert bl
++        bl = bl[0]
++        assert bl
++        assert bl['active'] == True
+ 
+-        # self.backlight contains the leading slash, so os.path.join doesn't quite work
+-        res = int(open(os.path.join(self.testbed.get_root_dir() + self.backlight, 'brightness')).read())
+-        # Undo mangling done in GSD
+-        if max_brightness >= 99:
+-            res -= 1
+-        return res
++        max_brightness = bl['max']
++        value = bl['value']
++
++        return value
+ 
+     def set_has_external_monitor(self, external):
+         if external:
+@@ -464,8 +422,8 @@ class PowerPluginTestScreensaver(PowerPluginBase):
+         time.sleep(0.5)
+         self.reset_idle_timer()
+         self.check_unblank(2)
+-        if not self.skip_sysfs_backlight:
+-            self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
++
++        self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
+ 
+         # Check for no blank before the normal blank timeout
+         self.check_no_blank(gsdpowerconstants.SCREENSAVER_TIMEOUT_BLANK - 4)
+@@ -731,9 +689,8 @@ class PowerPluginTestDim(PowerPluginBase):
+         self.check_dim(gsdpowerconstants.MINIMUM_IDLE_DIM_DELAY + 1)
+         # Give time for the brightness to change
+         time.sleep(2)
+-        if not self.skip_sysfs_backlight:
+-            level = self.get_brightness();
+-            self.assertTrue(level == dim_level, 'incorrect dim brightness (%d != %d)' % (level, dim_level))
++        level = self.get_brightness();
++        self.assertTrue(level == dim_level, 'incorrect dim brightness (%d != %d)' % (level, dim_level))
+ 
+         self.assertEqual(self.get_status(), gsdpowerenums.GSM_PRESENCE_STATUS_AVAILABLE)
+ 
+@@ -753,8 +710,7 @@ class PowerPluginTestDim(PowerPluginBase):
+         time.sleep(1)
+ 
+         # And check that we have the pre-dim brightness
+-        if not self.skip_sysfs_backlight:
+-            self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
++        self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
+ 
+     def test_lid_close_inhibition(self):
+         '''Check that we correctly inhibit suspend with an external monitor'''
+@@ -1103,15 +1059,10 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+     def test_brightness_stepping(self):
+         '''Check that stepping the backlight works as expected'''
+ 
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+         obj_gsd_power = self.session_bus_con.get_object(
+             'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+         obj_gsd_power_screen_iface = dbus.Interface(obj_gsd_power, 'org.gnome.SettingsDaemon.Power.Screen')
+ 
+-        # Each of the step calls will only return when the value was written
+-        start = time.time()
+         # We start at 50% and step by 5% each time
+         obj_gsd_power_screen_iface.StepUp()
+         self.assertEqual(self.get_brightness(), 55)
+@@ -1121,10 +1072,6 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+         self.assertEqual(self.get_brightness(), 65)
+         obj_gsd_power_screen_iface.StepUp()
+         self.assertEqual(self.get_brightness(), 70)
+-        stop = time.time()
+-        # This needs to take more than 0.8 seconds as each write is delayed by
+-        # 0.2 seconds by the test backlight helper
+-        self.assertGreater(stop - start, 0.8)
+ 
+         # Now, the same thing should work fine if we step multiple times,
+         # even if we are so quick that compression will happen.
+@@ -1162,9 +1109,6 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+     def test_brightness_compression(self):
+         '''Check that compression also happens when setting the property'''
+ 
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+         # Now test that the compression works correctly.
+         # NOTE: Relies on the implementation detail, that the property setter
+         #       returns immediately rather than waiting for the brightness to
+@@ -1186,33 +1130,7 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+         time.sleep(2.0)
+         self.assertEqual(self.get_brightness(), 90)
+ 
+-    def test_brightness_uevent(self):
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+-        obj_gsd_power = self.session_bus_con.get_object(
+-            'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+-        obj_gsd_power_prop_iface = dbus.Interface(obj_gsd_power, dbus.PROPERTIES_IFACE)
+-
+-        brightness = obj_gsd_power_prop_iface.Get('org.gnome.SettingsDaemon.Power.Screen', 'Brightness')
+-        self.assertEqual(50, brightness)
+-
+-        # Check that the brightness is updated if it was changed through some
+-        # other mechanism (e.g. firmware).
+-        # Set to 80+1 because of the GSD offset (see add_backlight).
+-        self.testbed.set_attribute(self.backlight, 'brightness', '81')
+-        self.testbed.uevent(self.backlight, 'change')
+-
+-        self.check_plugin_log('GsdBacklight: Got uevent', 1, 'gsd-power did not process uevent')
+-        time.sleep(0.2)
+-
+-        brightness = obj_gsd_power_prop_iface.Get('org.gnome.SettingsDaemon.Power.Screen', 'Brightness')
+-        self.assertEqual(80, brightness)
+-
+     def test_brightness_step(self):
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+         for l in self.plugin_startup_msgs:
+             if b'Step size for backlight is 5.' in l:
+                 break
+@@ -1220,9 +1138,6 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+             self.fail('Step size is not 5')
+ 
+     def test_legacy_brightness_step(self):
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+         for l in self.plugin_startup_msgs:
+             if b'Step size for backlight is 1.' in l:
+                 break
+@@ -1230,9 +1145,6 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+             self.fail('Step size is not 1')
+ 
+     def test_legacy_brightness_rounding(self):
+-        if self.skip_sysfs_backlight:
+-            self.skipTest("sysfs backlight support required for test")
+-
+         obj_gsd_power = self.session_bus_con.get_object(
+             'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+         obj_gsd_power_prop_iface = dbus.Interface(obj_gsd_power, dbus.PROPERTIES_IFACE)
+@@ -1265,34 +1177,6 @@ class PowerPluginTestBrightnessStep(PowerPluginBase):
+         time.sleep(0.6)
+         self.assertEqual(self.get_brightness(), 15)
+ 
+-    def test_no_backlight(self):
+-        '''Check that backlight brightness DBus api without a backlight'''
+-
+-        obj_gsd_power = self.session_bus_con.get_object(
+-            'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+-        obj_gsd_power_props = dbus.Interface(obj_gsd_power, dbus.PROPERTIES_IFACE)
+-        obj_gsd_power_screen = dbus.Interface(obj_gsd_power, 'org.gnome.SettingsDaemon.Power.Screen')
+-
+-        # We expect -1 to be returned
+-        brightness = obj_gsd_power_props.Get('org.gnome.SettingsDaemon.Power.Screen', 'Brightness')
+-        self.assertEqual(brightness, -1)
+-
+-        # Trying to set the brightness
+-        with self.assertRaises(dbus.DBusException) as exc:
+-            obj_gsd_power_props.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 1)
+-
+-        self.assertEqual(exc.exception.get_dbus_message(), 'No usable backlight could be found!')
+-
+-        with self.assertRaises(dbus.DBusException) as exc:
+-            obj_gsd_power_screen.StepUp()
+-
+-        self.assertEqual(exc.exception.get_dbus_message(), 'No usable backlight could be found!')
+-
+-        with self.assertRaises(dbus.DBusException) as exc:
+-            obj_gsd_power_screen.StepDown()
+-
+-        self.assertEqual(exc.exception.get_dbus_message(), 'No usable backlight could be found!')
+-
+     def test_power_saver_on_low_battery(self):
+         '''Check that the power-saver profile gets held when low on battery'''
+ 
+-- 
+2.51.1
+
+
+From a88c53c8a11d01be4925b49b9c71de69a3306581 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 13 Jun 2025 00:44:31 +0200
+Subject: [PATCH 03/10] media-keys: Remove screen brightness media keys
+
+They are now handled on the gnome-shell side.
+---
+ ...s-daemon.plugins.media-keys.gschema.xml.in | 32 -----------
+ plugins/media-keys/gsd-media-keys-manager.c   | 55 +------------------
+ plugins/media-keys/media-keys.h               |  3 -
+ plugins/media-keys/shortcuts-list.h           |  3 -
+ 4 files changed, 3 insertions(+), 90 deletions(-)
+
+diff --git a/data/org.gnome.settings-daemon.plugins.media-keys.gschema.xml.in b/data/org.gnome.settings-daemon.plugins.media-keys.gschema.xml.in
+index ef5be625..9a3f0edc 100644
+--- a/data/org.gnome.settings-daemon.plugins.media-keys.gschema.xml.in
++++ b/data/org.gnome.settings-daemon.plugins.media-keys.gschema.xml.in
+@@ -385,22 +385,6 @@
+       <description>Binding to suspend the machine.</description>
+     </key>
+ 
+-    <key name="screen-brightness-up" type="as">
+-      <default>['']</default>
+-      <summary>Screen brightness up</summary>
+-      <description>Binding to increase the screen brightness.</description>
+-    </key>
+-    <key name="screen-brightness-down" type="as">
+-      <default>['']</default>
+-      <summary>Screen brightness down</summary>
+-      <description>Binding to decrease the screen brightness.</description>
+-    </key>
+-    <key name="screen-brightness-cycle" type="as">
+-      <default>['']</default>
+-      <summary>Screen brightness cycle</summary>
+-      <description>Binding to cycle the screen brightness.</description>
+-    </key>
+-
+     <key name="keyboard-brightness-up" type="as">
+       <default>['']</default>
+       <summary>Keyboard brightness up</summary>
+@@ -622,22 +606,6 @@
+       <description>Static binding to suspend the machine.</description>
+     </key>
+ 
+-    <key name="screen-brightness-up-static" type="as">
+-      <default>['XF86MonBrightnessUp']</default>
+-      <summary>Screen brightness up</summary>
+-      <description>Static binding to increase the screen brightness.</description>
+-    </key>
+-    <key name="screen-brightness-down-static" type="as">
+-      <default>['XF86MonBrightnessDown']</default>
+-      <summary>Screen brightness down</summary>
+-      <description>Static binding to decrease the screen brightness.</description>
+-    </key>
+-    <key name="screen-brightness-cycle-static" type="as">
+-      <default>['XF86MonBrightnessCycle']</default>
+-      <summary>Screen brightness cycle</summary>
+-      <description>Static binding to cycle the screen brightness.</description>
+-    </key>
+-
+     <key name="keyboard-brightness-up-static" type="as">
+       <default>['XF86KbdBrightnessUp']</default>
+       <summary>Keyboard brightness up</summary>
+diff --git a/plugins/media-keys/gsd-media-keys-manager.c b/plugins/media-keys/gsd-media-keys-manager.c
+index 60ff2ced..aaea5ec8 100644
+--- a/plugins/media-keys/gsd-media-keys-manager.c
++++ b/plugins/media-keys/gsd-media-keys-manager.c
+@@ -180,7 +180,6 @@ typedef struct
+         /* Power stuff */
+         GSettings       *power_settings;
+         GDBusProxy      *power_proxy;
+-        GDBusProxy      *power_screen_proxy;
+         GDBusProxy      *power_keyboard_proxy;
+         UpDevice        *composite_device;
+         char            *chassis_type;
+@@ -2086,22 +2085,15 @@ update_brightness_cb (GObject             *source_object,
+         GVariant *variant;
+         GsdMediaKeysManager *manager = GSD_MEDIA_KEYS_MANAGER (user_data);
+         GsdMediaKeysManagerPrivate *priv = GSD_MEDIA_KEYS_MANAGER_GET_PRIVATE (manager);
+-        const char *icon, *debug;
++        const char *icon;
+         char *connector = NULL;
+ 
+-        /* update the dialog with the new value */
+-        if (G_DBUS_PROXY (source_object) == priv->power_keyboard_proxy) {
+-                debug = "keyboard";
+-        } else {
+-                debug = "screen";
+-        }
+-
+         variant = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object),
+                                         res, &error);
+         if (variant == NULL) {
+                 if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+-                        g_warning ("Failed to set new %s percentage: %s",
+-                                   debug, error->message);
++                        g_warning ("Failed to set new keyboard percentage: %s",
++                                   error->message);
+                 g_error_free (error);
+                 return;
+         }
+@@ -2133,11 +2125,6 @@ do_brightness_action (GsdMediaKeysManager *manager,
+         case KEYBOARD_BRIGHTNESS_TOGGLE_KEY:
+                 proxy = priv->power_keyboard_proxy;
+                 break;
+-        case SCREEN_BRIGHTNESS_UP_KEY:
+-        case SCREEN_BRIGHTNESS_DOWN_KEY:
+-        case SCREEN_BRIGHTNESS_CYCLE_KEY:
+-                proxy = priv->power_screen_proxy;
+-                break;
+         default:
+                 g_assert_not_reached ();
+         }
+@@ -2150,19 +2137,14 @@ do_brightness_action (GsdMediaKeysManager *manager,
+ 
+         switch (type) {
+         case KEYBOARD_BRIGHTNESS_UP_KEY:
+-        case SCREEN_BRIGHTNESS_UP_KEY:
+                 cmd = "StepUp";
+                 break;
+         case KEYBOARD_BRIGHTNESS_DOWN_KEY:
+-        case SCREEN_BRIGHTNESS_DOWN_KEY:
+                 cmd = "StepDown";
+                 break;
+         case KEYBOARD_BRIGHTNESS_TOGGLE_KEY:
+                 cmd = "Toggle";
+                 break;
+-        case SCREEN_BRIGHTNESS_CYCLE_KEY:
+-                cmd = "Cycle";
+-                break;
+         default:
+                 g_assert_not_reached ();
+         }
+@@ -2467,9 +2449,6 @@ do_action (GsdMediaKeysManager *manager,
+         case HIBERNATE_KEY:
+                 do_config_power_action (manager, GSD_POWER_ACTION_HIBERNATE, power_action_noninteractive);
+                 break;
+-        case SCREEN_BRIGHTNESS_UP_KEY:
+-        case SCREEN_BRIGHTNESS_DOWN_KEY:
+-        case SCREEN_BRIGHTNESS_CYCLE_KEY:
+         case KEYBOARD_BRIGHTNESS_UP_KEY:
+         case KEYBOARD_BRIGHTNESS_DOWN_KEY:
+         case KEYBOARD_BRIGHTNESS_TOGGLE_KEY:
+@@ -3079,7 +3058,6 @@ gsd_media_keys_manager_stop (GsdMediaKeysManager *manager)
+         g_clear_object (&priv->sound_settings);
+         g_clear_object (&priv->power_settings);
+         g_clear_object (&priv->power_proxy);
+-        g_clear_object (&priv->power_screen_proxy);
+         g_clear_object (&priv->power_keyboard_proxy);
+         g_clear_object (&priv->composite_device);
+         g_clear_object (&priv->mpris_controller);
+@@ -3438,23 +3416,6 @@ power_ready_cb (GObject             *source_object,
+         }
+ }
+ 
+-static void
+-power_screen_ready_cb (GObject             *source_object,
+-                       GAsyncResult        *res,
+-                       GsdMediaKeysManager *manager)
+-{
+-        GsdMediaKeysManagerPrivate *priv = GSD_MEDIA_KEYS_MANAGER_GET_PRIVATE (manager);
+-        GError *error = NULL;
+-
+-        priv->power_screen_proxy = g_dbus_proxy_new_finish (res, &error);
+-        if (priv->power_screen_proxy == NULL) {
+-                if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+-                        g_warning ("Failed to get proxy for power (screen): %s",
+-                                   error->message);
+-                g_error_free (error);
+-        }
+-}
+-
+ static void
+ power_keyboard_ready_cb (GObject             *source_object,
+                          GAsyncResult        *res,
+@@ -3505,16 +3466,6 @@ on_bus_gotten (GObject             *source_object,
+                           (GAsyncReadyCallback) power_ready_cb,
+                           manager);
+ 
+-        g_dbus_proxy_new (priv->connection,
+-                          G_DBUS_PROXY_FLAGS_NONE,
+-                          NULL,
+-                          GSD_DBUS_NAME ".Power",
+-                          GSD_DBUS_PATH "/Power",
+-                          GSD_DBUS_BASE_INTERFACE ".Power.Screen",
+-                          NULL,
+-                          (GAsyncReadyCallback) power_screen_ready_cb,
+-                          manager);
+-
+         g_dbus_proxy_new (priv->connection,
+                           G_DBUS_PROXY_FLAGS_NONE,
+                           NULL,
+diff --git a/plugins/media-keys/media-keys.h b/plugins/media-keys/media-keys.h
+index 801a13be..cf9a8880 100644
+--- a/plugins/media-keys/media-keys.h
++++ b/plugins/media-keys/media-keys.h
+@@ -64,9 +64,6 @@ typedef enum {
+         POWER_KEY,
+         SUSPEND_KEY,
+         HIBERNATE_KEY,
+-        SCREEN_BRIGHTNESS_UP_KEY,
+-        SCREEN_BRIGHTNESS_DOWN_KEY,
+-        SCREEN_BRIGHTNESS_CYCLE_KEY,
+         KEYBOARD_BRIGHTNESS_UP_KEY,
+         KEYBOARD_BRIGHTNESS_DOWN_KEY,
+         KEYBOARD_BRIGHTNESS_TOGGLE_KEY,
+diff --git a/plugins/media-keys/shortcuts-list.h b/plugins/media-keys/shortcuts-list.h
+index c8f084c8..eab49640 100644
+--- a/plugins/media-keys/shortcuts-list.h
++++ b/plugins/media-keys/shortcuts-list.h
+@@ -87,9 +87,6 @@ static struct {
+         /* the kernel / Xorg names really are like this... */
+         { SUSPEND_KEY, "suspend", TRUE, POWER_KEYS_MODE, META_KEY_BINDING_IGNORE_AUTOREPEAT },
+         { HIBERNATE_KEY, "hibernate", TRUE, POWER_KEYS_MODE, META_KEY_BINDING_IGNORE_AUTOREPEAT },
+-        { SCREEN_BRIGHTNESS_UP_KEY, "screen-brightness-up", TRUE, SHELL_ACTION_MODE_ALL },
+-        { SCREEN_BRIGHTNESS_DOWN_KEY, "screen-brightness-down", TRUE, SHELL_ACTION_MODE_ALL },
+-        { SCREEN_BRIGHTNESS_CYCLE_KEY, "screen-brightness-cycle", TRUE, SHELL_ACTION_MODE_ALL },
+         { KEYBOARD_BRIGHTNESS_UP_KEY, "keyboard-brightness-up", TRUE, SHELL_ACTION_MODE_ALL },
+         { KEYBOARD_BRIGHTNESS_DOWN_KEY, "keyboard-brightness-down", TRUE, SHELL_ACTION_MODE_ALL },
+         { KEYBOARD_BRIGHTNESS_TOGGLE_KEY, "keyboard-brightness-toggle", TRUE, SHELL_ACTION_MODE_ALL, META_KEY_BINDING_IGNORE_AUTOREPEAT },
+-- 
+2.51.1
+
+
+From 5108cf07967fe4b2a414530a987a45ad09de388e Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 13 Jun 2025 00:49:08 +0200
+Subject: [PATCH 04/10] power: Rename backlight_enable to enable_monitors
+
+The power saving feature is really about turning the panel off and on,
+which can have a backlight but doesn't need to. This can be confused
+with some backlight brightness control, so rename it.
+---
+ plugins/power/gsd-power-manager.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 449f283a..3ce6eb24 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1285,7 +1285,7 @@ set_power_saving_mode (GsdPowerManager  *manager,
+ }
+ 
+ static void
+-backlight_enable (GsdPowerManager *manager)
++enable_monitors (GsdPowerManager *manager)
+ {
+         iio_proxy_claim_light (manager, TRUE);
+         set_power_saving_mode (manager, GSD_POWER_SAVE_MODE_ON);
+@@ -1294,7 +1294,7 @@ backlight_enable (GsdPowerManager *manager)
+ }
+ 
+ static void
+-backlight_disable (GsdPowerManager *manager)
++disable_monitors (GsdPowerManager *manager)
+ {
+         iio_proxy_claim_light (manager, FALSE);
+         set_power_saving_mode (manager, GSD_POWER_SAVE_MODE_OFF);
+@@ -1323,7 +1323,7 @@ do_power_action_type (GsdPowerManager *manager,
+                 action_poweroff (manager);
+                 break;
+         case GSD_POWER_ACTION_BLANK:
+-                backlight_disable (manager);
++                disable_monitors (manager);
+                 break;
+         case GSD_POWER_ACTION_NOTHING:
+                 break;
+@@ -1789,7 +1789,7 @@ idle_set_mode (GsdPowerManager *manager, GsdPowerIdleMode mode)
+         /* turn off screen and kbd */
+         } else if (mode == GSD_POWER_IDLE_MODE_BLANK) {
+ 
+-                backlight_disable (manager);
++                disable_monitors (manager);
+ 
+                 /* only toggle keyboard if present and not already toggled */
+                 if (manager->upower_kbd_proxy &&
+@@ -1816,7 +1816,7 @@ idle_set_mode (GsdPowerManager *manager, GsdPowerIdleMode mode)
+         /* turn on screen and restore user-selected brightness level */
+         } else if (mode == GSD_POWER_IDLE_MODE_NORMAL) {
+ 
+-                backlight_enable (manager);
++                enable_monitors (manager);
+ 
+                 /* reset brightness if we dimmed */
+                 if (manager->backlight && manager->pre_dim_brightness >= 0) {
+@@ -2781,7 +2781,7 @@ handle_suspend_actions (GsdPowerManager *manager)
+ {
+         /* close any existing notification about idleness */
+         notify_close_if_showing (&manager->notification_sleep_warning);
+-        backlight_disable (manager);
++        disable_monitors (manager);
+         uninhibit_suspend (manager);
+ }
+ 
+@@ -2789,7 +2789,7 @@ static void
+ handle_resume_actions (GsdPowerManager *manager)
+ {
+         /* ensure we turn the panel back on after resume */
+-        backlight_enable (manager);
++        enable_monitors (manager);
+ 
+         /* set up the delay again */
+         inhibit_suspend (manager);
+@@ -3079,7 +3079,7 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         idle_configure (manager);
+ 
+         /* ensure the default dpms timeouts are cleared */
+-        backlight_enable (manager);
++        enable_monitors (manager);
+ 
+         if (!gnome_settings_is_wayland ())
+                 manager->xscreensaver_watchdog_timer_id = gsd_power_enable_screensaver_watchdog ();
+-- 
+2.51.1
+
+
+From 7d3f498b05aec19e508e187e6320c4baf01b1598 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 13 Jun 2025 00:50:55 +0200
+Subject: [PATCH 05/10] power/test: Mock org.gnome.Shell.Brightness interface
+
+We will use it to dim the screen for power saving reasons and to set the
+auto brightness target. It will replace the direct mutter backlight
+control.
+---
+ .../power/dbusmock-templates/gnome-shell.py   | 29 +++++++++++++++++++
+ plugins/power/test.py                         | 24 ++++++++++-----
+ 2 files changed, 45 insertions(+), 8 deletions(-)
+ create mode 100644 plugins/power/dbusmock-templates/gnome-shell.py
+
+diff --git a/plugins/power/dbusmock-templates/gnome-shell.py b/plugins/power/dbusmock-templates/gnome-shell.py
+new file mode 100644
+index 00000000..107a1885
+--- /dev/null
++++ b/plugins/power/dbusmock-templates/gnome-shell.py
+@@ -0,0 +1,29 @@
++'''gnome-shell proxy mock template
++'''
++
++# This program is free software; you can redistribute it and/or modify it under
++# the terms of the GNU Lesser General Public License as published by the Free
++# Software Foundation; either version 3 of the License, or (at your option) any
++# later version.  See http://www.gnu.org/copyleft/lgpl.html for the full text
++# of the license.
++
++
++__author__ = 'Sebastian Wick'
++__copyright__ = '(c) 2025 Red Hat Inc.'
++
++
++import dbus
++from dbusmock import MOCK_IFACE, mockobject
++
++
++BUS_NAME = 'org.gnome.Shell.Brightness'
++MAIN_OBJ = '/org/gnome/Shell/Brightness'
++MAIN_IFACE = 'org.gnome.Shell.Brightness'
++SYSTEM_BUS = False
++
++
++def load(mock, parameters):
++    mock.AddMethod(MAIN_IFACE, 'SetDimming', 'b', '', '');
++    mock.AddMethod(MAIN_IFACE, 'SetAutoBrightnessTarget', 'd', '', '');
++
++    mock.AddProperty(MAIN_IFACE, 'HasBrightnessControl', True)
+diff --git a/plugins/power/test.py b/plugins/power/test.py
+index 4cfd9184..6633c00e 100755
+--- a/plugins/power/test.py
++++ b/plugins/power/test.py
+@@ -13,6 +13,7 @@ import math
+ import os
+ import os.path
+ import signal
++import dbusmock
+ from pathlib import Path
+ 
+ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+@@ -74,6 +75,16 @@ def mutter_at_least(version):
+     # assume equal
+     return True
+ 
++def dbusmock_template(name):
++    template = (
++        Path(os.path.realpath(__file__)).parent
++        / "dbusmock-templates"
++        / f"{name}.py"
++    )
++    assert template.exists()
++    assert template.suffix == ".py"
++    return template.absolute().as_posix()
++
+ class PowerPluginBase(gsdtestcase.GSDTestCase):
+     '''Test the power plugin'''
+ 
+@@ -92,14 +103,7 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         self.addCleanup(self.stop_logind)
+ 
+         # start mock mutter
+-        template = (
+-            Path(os.path.realpath(__file__)).parent
+-            / "dbusmock-templates"
+-            / "mutter.py"
+-        )
+-        assert template.exists()
+-        assert template.suffix == ".py"
+-        (self.mockmutter, self.obj_mockmutter) = self.spawn_server_template(template.absolute().as_posix())
++        (self.mockmutter, self.obj_mockmutter) = self.spawn_server_template(dbusmock_template('mutter'))
+         self.addCleanup(self.stop_process, self.mockmutter)
+ 
+         if 'legacy_brightness' in self.id():
+@@ -107,6 +111,10 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         else:
+             self.obj_mockmutter.MockSetBacklight('dp-1', True, 0, 100, 50)
+ 
++        # start mock gnome-shell
++        (self.gnomeshell, self.obj_gnomeshell) = self.spawn_server_template(dbusmock_template('gnome-shell'))
++        self.addCleanup(self.stop_process, self.gnomeshell)
++
+         # start mock upowerd
+         (self.upowerd, self.obj_upower) = self.spawn_server_template(
+             'upower', {'DaemonVersion': '0.99', 'OnBattery': True, 'LidIsClosed': False})
+-- 
+2.51.1
+
+
+From f25a642a2afe18915f9ef798750b831fba498dcc Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 13 Jun 2025 00:52:59 +0200
+Subject: [PATCH 06/10] power: Add new dimming and auto brightness API based on
+ Shell.Brightness
+
+We will switch over to them in the next commit.
+---
+ plugins/power/gsd-power-manager.c | 109 ++++++++++++++++++++++++++++++
+ 1 file changed, 109 insertions(+)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 3ce6eb24..5d1fb33b 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -79,6 +79,10 @@
+ #define SYSTEMD_DBUS_PATH                       "/org/freedesktop/login1"
+ #define SYSTEMD_DBUS_INTERFACE                  "org.freedesktop.login1.Manager"
+ 
++#define SHELL_BRIGHTNESS_DBUS_NAME              "org.gnome.Shell.Brightness"
++#define SHELL_BRIGHTNESS_DBUS_PATH              "/org/gnome/Shell/Brightness"
++#define SHELL_BRIGHTNESS_DBUS_INTERFACE         "org.gnome.Shell.Brightness"
++
+ /* Time between notifying the user about a critical action and the action itself in UPower. */
+ #define GSD_ACTION_DELAY 20
+ /* And the time before we stop the warning sound */
+@@ -172,6 +176,7 @@ struct _GsdPowerManager
+         /* Brightness */
+         GsdBacklight            *backlight;
+         gint                     pre_dim_brightness; /* level, not percentage */
++        GDBusProxy              *shell_brightness_proxy;
+ 
+         /* Keyboard */
+         GDBusProxy              *upower_kbd_proxy;
+@@ -1193,6 +1198,94 @@ action_hibernate (GsdPowerManager *manager)
+                            "Error calling Hibernate");
+ }
+ 
++static gboolean
++shell_brightness_has_control (GsdPowerManager *manager)
++{
++        g_autoptr (GVariant) has_control_variant = NULL;
++        gboolean has_control;
++
++        if (!manager->shell_brightness_proxy)
++                return FALSE;
++
++        has_control_variant =
++                g_dbus_proxy_get_cached_property (manager->shell_brightness_proxy,
++                                                  "HasBrightnessControl");
++
++        if (!has_control_variant)
++                return FALSE;
++
++        g_variant_get (has_control_variant, "(b)", &has_control);
++        return has_control;
++}
++
++static void
++shell_brightness_set_auto_target_cb (GObject      *source_object,
++                                     GAsyncResult *res,
++                                     gpointer      user_data)
++{
++        g_autoptr (GVariant) result = NULL;
++        g_autoptr (GError) error = NULL;
++
++        result = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object),
++                                           res,
++                                           &error);
++        if (result)
++                return;
++
++        g_warning ("couldn't set the auto brightness target: %s",
++                   error->message);
++}
++
++static void
++shell_brightness_set_auto_target (GsdPowerManager *manager,
++                                  float            target)
++{
++        if (!manager->shell_brightness_proxy)
++                return;
++
++        g_dbus_proxy_call (G_DBUS_PROXY (manager->shell_brightness_proxy),
++                           "SetAutoBrightnessTarget",
++                           g_variant_new ("(d)", target),
++                           G_DBUS_CALL_FLAGS_NONE,
++                           -1, NULL,
++                           shell_brightness_set_auto_target_cb, NULL);
++}
++
++static void
++shell_brightness_set_dimming_cb (GObject      *source_object,
++                                 GAsyncResult *res,
++                                 gpointer      user_data)
++{
++        g_autoptr (GVariant) result = NULL;
++        g_autoptr (GError) error = NULL;
++        gboolean enable = !!GPOINTER_TO_UINT (user_data);
++
++        result = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object),
++                                           res,
++                                           &error);
++        if (result)
++                return;
++
++        g_warning ("couldn't %s dimming: %s",
++                   enable ? "enable" : "disable",
++                   error->message);
++}
++
++static void
++shell_brightness_set_dimming (GsdPowerManager *manager,
++                              gboolean         enable)
++{
++        if (!manager->shell_brightness_proxy)
++                return;
++
++        g_dbus_proxy_call (G_DBUS_PROXY (manager->shell_brightness_proxy),
++                           "SetDimming",
++                           g_variant_new ("(b)", enable),
++                           G_DBUS_CALL_FLAGS_NONE,
++                           -1, NULL,
++                           shell_brightness_set_dimming_cb,
++                           GUINT_TO_POINTER (enable));
++}
+ 
+ static void
+ light_claimed_cb (GObject      *source_object,
+@@ -3062,6 +3155,21 @@ gsd_power_manager_start (GsdPowerManager *manager,
+                                   power_keyboard_proxy_ready_cb,
+                                   manager);
+ 
++        manager->shell_brightness_proxy =
++                g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SESSION,
++                                               G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
++                                               NULL,
++                                               SHELL_BRIGHTNESS_DBUS_NAME,
++                                               SHELL_BRIGHTNESS_DBUS_PATH,
++                                               SHELL_BRIGHTNESS_DBUS_INTERFACE,
++                                               NULL,
++                                               error);
++        if (manager->shell_brightness_proxy == NULL) {
++                g_debug ("No org.gnome.Shell.Brightness support, "
++                         "dimming and auto brightness is disabled");
++                g_clear_error (error);
++        }
++
+         manager->devices_array = g_ptr_array_new_with_free_func (g_object_unref);
+         manager->devices_notified_ht = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                                               g_free, NULL);
+@@ -3165,6 +3273,7 @@ gsd_power_manager_stop (GsdPowerManager *manager)
+ 
+         g_clear_object (&manager->idle_monitor);
+         g_clear_object (&manager->upower_kbd_proxy);
++        g_clear_object (&manager->shell_brightness_proxy);
+ 
+         if (manager->xscreensaver_watchdog_timer_id > 0) {
+                 g_source_remove (manager->xscreensaver_watchdog_timer_id);
+-- 
+2.51.1
+
+
+From f5b14548b3cf62a5f38394a93b40431d65dd58b8 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 13 Jun 2025 00:54:01 +0200
+Subject: [PATCH 07/10] power: Switch from direct mutter backlight handling to
+ Shell.Brightness
+
+The shell handles dimming and handling the auto brightness target and is
+the single source of truth for the actual display brightness control. We
+just send semantically useful information to it.
+---
+ plugins/power/gsd-backlight.c       | 558 ----------------------------
+ plugins/power/gsd-backlight.h       |  76 ----
+ plugins/power/gsd-power-constants.h |   4 -
+ plugins/power/gsd-power-manager.c   | 216 +----------
+ plugins/power/meson.build           |   1 -
+ plugins/power/test.py               | 173 +--------
+ 6 files changed, 29 insertions(+), 999 deletions(-)
+ delete mode 100644 plugins/power/gsd-backlight.c
+ delete mode 100644 plugins/power/gsd-backlight.h
+
+diff --git a/plugins/power/gsd-backlight.c b/plugins/power/gsd-backlight.c
+deleted file mode 100644
+index a1fa2efb..00000000
+--- a/plugins/power/gsd-backlight.c
++++ /dev/null
+@@ -1,558 +0,0 @@
+-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
+- *
+- * Copyright (C) 2018 Red Hat Inc.
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+- *
+- */
+-
+-#include "config.h"
+-#include <stdlib.h>
+-#include <stdint.h>
+-
+-#include "gnome-settings-bus.h"
+-#include "gsd-backlight.h"
+-#include "gpm-common.h"
+-#include "gsd-power-constants.h"
+-#include "gsd-power-manager.h"
+-
+-struct _GsdBacklight
+-{
+-        GObject object;
+-
+-        gint brightness_min;
+-        gint brightness_max;
+-        gint brightness_val;
+-        gint brightness_target;
+-        gint brightness_step;
+-
+-        uint32_t backlight_serial;
+-        char *backlight_connector;
+-
+-        gboolean initialized;
+-
+-        gboolean builtin_display_disabled;
+-};
+-
+-enum {
+-        PROP_BRIGHTNESS = 1,
+-        PROP_LAST,
+-};
+-
+-#define MUTTER_DBUS_NAME                       "org.gnome.Mutter.DisplayConfig"
+-#define MUTTER_DBUS_PATH                       "/org/gnome/Mutter/DisplayConfig"
+-#define MUTTER_DBUS_INTERFACE                  "org.gnome.Mutter.DisplayConfig"
+-
+-static GParamSpec *props[PROP_LAST];
+-
+-static void     gsd_backlight_initable_iface_init (GInitableIface  *iface);
+-static gboolean gsd_backlight_initable_init       (GInitable       *initable,
+-                                                   GCancellable    *cancellable,
+-                                                   GError         **error);
+-
+-G_DEFINE_TYPE_EXTENDED (GsdBacklight, gsd_backlight, G_TYPE_OBJECT, 0,
+-                        G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
+-                                               gsd_backlight_initable_iface_init))
+-
+-/**
+- * gsd_backlight_get_brightness
+- * @backlight: a #GsdBacklight
+- * @target: Output parameter for the value the target value of pending set operations.
+- *
+- * The backlight value returns the last known stable value. This value will
+- * only update once all pending operations to set a new value have finished.
+- *
+- * As such, this function may return a different value from the return value
+- * of the async brightness setter. This happens when another set operation was
+- * queued after it was already running.
+- *
+- * If the internal display is detected as disabled, then the function will
+- * instead return -1.
+- *
+- * Returns: The last stable backlight value or -1 if the internal display is disabled.
+- **/
+-gint
+-gsd_backlight_get_brightness (GsdBacklight *backlight, gint *target)
+-{
+-        if (backlight->builtin_display_disabled)
+-                return -1;
+-
+-        return ABS_TO_PERCENTAGE (backlight->brightness_min,
+-                                  backlight->brightness_max,
+-                                  backlight->brightness_val);
+-}
+-
+-/**
+- * gsd_backlight_get_target_brightness
+- * @backlight: a #GsdBacklight
+- *
+- * This returns the target value of the pending operations, which might differ
+- * from the last known stable value, but is identical to the last value set in
+- * the async setter.
+- *
+- * If the internal display is detected as disabled, then the function will
+- * instead return -1.
+- *
+- * Returns: The current target backlight value or -1 if the internal display is disabled.
+- **/
+-gint
+-gsd_backlight_get_target_brightness (GsdBacklight *backlight)
+-{
+-        if (backlight->builtin_display_disabled)
+-                return -1;
+-
+-        return ABS_TO_PERCENTAGE (backlight->brightness_min,
+-                                  backlight->brightness_max,
+-                                  backlight->brightness_target);
+-}
+-
+-static void update_mutter_backlight (GsdBacklight *backlight);
+-
+-static void
+-gsd_backlight_set_brightness_val_async (GsdBacklight *backlight,
+-                                        int value,
+-                                        GCancellable *cancellable,
+-                                        GAsyncReadyCallback callback,
+-                                        gpointer user_data)
+-{
+-        GError *error = NULL;
+-        g_autoptr(GTask) task = NULL;
+-        const char *monitor;
+-        GsdDisplayConfig *display_config =
+-                gnome_settings_bus_get_display_config_proxy ();
+-
+-        value = MIN(backlight->brightness_max, value);
+-        value = MAX(backlight->brightness_min, value);
+-
+-        backlight->brightness_target = value;
+-
+-        task = g_task_new (backlight, cancellable, callback, user_data);
+-        if (!backlight->initialized) {
+-                g_task_return_new_error (task, GSD_POWER_MANAGER_ERROR,
+-                                         GSD_POWER_MANAGER_ERROR_FAILED,
+-                                         "No backend initialized yet");
+-                return;
+-        }
+-
+-        monitor = backlight->backlight_connector;
+-        if (!monitor) {
+-                g_assert_not_reached ();
+-
+-                g_task_return_new_error (task, GSD_POWER_MANAGER_ERROR,
+-                                         GSD_POWER_MANAGER_ERROR_FAILED,
+-                                         "No method to set brightness!");
+-                return;
+-        }
+-
+-        while (TRUE) {
+-                uint32_t serial = backlight->backlight_serial;
+-
+-                g_clear_error (&error);
+-
+-                if (gsd_display_config_call_set_backlight_sync (display_config,
+-                                                                serial,
+-                                                                monitor,
+-                                                                value,
+-                                                                NULL,
+-                                                                &error))
+-                        break;
+-
+-                update_mutter_backlight (backlight);
+-                if (backlight->backlight_serial == serial) {
+-                        g_task_return_error (task, error);
+-                        return;
+-                }
+-        }
+-
+-        backlight->brightness_val = value;
+-        g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
+-        g_task_return_int (task, gsd_backlight_get_brightness (backlight));
+-
+-}
+-
+-void
+-gsd_backlight_set_brightness_async (GsdBacklight *backlight,
+-                                    gint percent,
+-                                    GCancellable *cancellable,
+-                                    GAsyncReadyCallback callback,
+-                                    gpointer user_data)
+-{
+-        /* Overflow/underflow is handled by gsd_backlight_set_brightness_val_async. */
+-        gsd_backlight_set_brightness_val_async (backlight,
+-                                                PERCENTAGE_TO_ABS (backlight->brightness_min,
+-                                                                   backlight->brightness_max,
+-                                                                   percent),
+-                                                cancellable,
+-                                                callback,
+-                                                user_data);
+-}
+-
+-/**
+- * gsd_backlight_set_brightness_finish
+- * @backlight: a #GsdBacklight
+- * @res: the #GAsyncResult passed to the callback
+- * @error: #GError return address
+- *
+- * Finish an operation started by gsd_backlight_set_brightness_async(). Will
+- * return the value that was actually set (which may be different because of
+- * rounding or as multiple set actions were queued up).
+- *
+- * Please note that a call to gsd_backlight_get_brightness() may not in fact
+- * return the same value if further operations to set the value are pending.
+- *
+- * Returns: The brightness in percent that was set.
+- **/
+-gint
+-gsd_backlight_set_brightness_finish (GsdBacklight *backlight,
+-                                     GAsyncResult *res,
+-                                     GError **error)
+-{
+-        return g_task_propagate_int (G_TASK (res), error);
+-}
+-
+-void
+-gsd_backlight_step_up_async (GsdBacklight *backlight,
+-                             GCancellable *cancellable,
+-                             GAsyncReadyCallback callback,
+-                             gpointer user_data)
+-{
+-        gint value;
+-
+-        /* Overflows are handled by gsd_backlight_set_brightness_val_async. */
+-        value = backlight->brightness_target + backlight->brightness_step;
+-
+-        gsd_backlight_set_brightness_val_async (backlight,
+-                                                value,
+-                                                cancellable,
+-                                                callback,
+-                                                user_data);
+-}
+-
+-/**
+- * gsd_backlight_step_up_finish
+- * @backlight: a #GsdBacklight
+- * @res: the #GAsyncResult passed to the callback
+- * @error: #GError return address
+- *
+- * Finish an operation started by gsd_backlight_step_up_async(). Will return
+- * the value that was actually set (which may be different because of rounding
+- * or as multiple set actions were queued up).
+- *
+- * Please note that a call to gsd_backlight_get_brightness() may not in fact
+- * return the same value if further operations to set the value are pending.
+- *
+- * For simplicity it is also valid to call gsd_backlight_set_brightness_finish()
+- * allowing sharing the callback routine for calls to
+- * gsd_backlight_set_brightness_async(), gsd_backlight_step_up_async(),
+- * gsd_backlight_step_down_async() and gsd_backlight_cycle_up_async().
+- *
+- * Returns: The brightness in percent that was set.
+- **/
+-gint
+-gsd_backlight_step_up_finish (GsdBacklight *backlight,
+-                              GAsyncResult *res,
+-                              GError **error)
+-{
+-        return g_task_propagate_int (G_TASK (res), error);
+-}
+-
+-void
+-gsd_backlight_step_down_async (GsdBacklight *backlight,
+-                               GCancellable *cancellable,
+-                               GAsyncReadyCallback callback,
+-                               gpointer user_data)
+-{
+-        gint value;
+-
+-        /* Underflows are handled by gsd_backlight_set_brightness_val_async. */
+-        value = backlight->brightness_target - backlight->brightness_step;
+-
+-        gsd_backlight_set_brightness_val_async (backlight,
+-                                                value,
+-                                                cancellable,
+-                                                callback,
+-                                                user_data);
+-}
+-
+-/**
+- * gsd_backlight_step_down_finish
+- * @backlight: a #GsdBacklight
+- * @res: the #GAsyncResult passed to the callback
+- * @error: #GError return address
+- *
+- * Finish an operation started by gsd_backlight_step_down_async(). Will return
+- * the value that was actually set (which may be different because of rounding
+- * or as multiple set actions were queued up).
+- *
+- * Please note that a call to gsd_backlight_get_brightness() may not in fact
+- * return the same value if further operations to set the value are pending.
+- *
+- * For simplicity it is also valid to call gsd_backlight_set_brightness_finish()
+- * allowing sharing the callback routine for calls to
+- * gsd_backlight_set_brightness_async(), gsd_backlight_step_up_async(),
+- * gsd_backlight_step_down_async() and gsd_backlight_cycle_up_async().
+- *
+- * Returns: The brightness in percent that was set.
+- **/
+-gint
+-gsd_backlight_step_down_finish (GsdBacklight *backlight,
+-                                GAsyncResult *res,
+-                                GError **error)
+-{
+-        return g_task_propagate_int (G_TASK (res), error);
+-}
+-
+-/**
+- * gsd_backlight_cycle_up_async
+- * @backlight: a #GsdBacklight
+- * @cancellable: an optional #GCancellable, NULL to ignore
+- * @callback: the #GAsyncReadyCallback invoked for cycle up to be finished
+- * @user_data: the #gpointer passed to the callback
+- *
+- * Start a brightness cycle up operation by gsd_backlight_cycle_up_async().
+- * The brightness will be stepped up if it is not already at the maximum.
+- * If it is already at the maximum, it will be set to the minimum brightness.
+- **/
+-void
+-gsd_backlight_cycle_up_async (GsdBacklight *backlight,
+-                              GCancellable *cancellable,
+-                              GAsyncReadyCallback callback,
+-                              gpointer user_data)
+-{
+-        if (backlight->brightness_target < backlight->brightness_max) {
+-                gsd_backlight_step_up_async (backlight,
+-                                             cancellable,
+-                                             callback,
+-                                             user_data);
+-        } else {
+-                gsd_backlight_set_brightness_val_async (backlight,
+-                                                        backlight->brightness_min,
+-                                                        cancellable,
+-                                                        callback,
+-                                                        user_data);
+-        }
+-}
+-
+-/**
+- * gsd_backlight_cycle_up_finish
+- * @backlight: a #GsdBacklight
+- * @res: the #GAsyncResult passed to the callback
+- * @error: #GError return address
+- *
+- * Finish an operation started by gsd_backlight_cycle_up_async(). Will return
+- * the value that was actually set (which may be different because of rounding
+- * or as multiple set actions were queued up).
+- *
+- * Please note that a call to gsd_backlight_get_brightness() may not in fact
+- * return the same value if further operations to set the value are pending.
+- *
+- * For simplicity it is also valid to call gsd_backlight_set_brightness_finish()
+- * allowing sharing the callback routine for calls to
+- * gsd_backlight_set_brightness_async(), gsd_backlight_step_up_async(),
+- * gsd_backlight_step_down_async() and gsd_backlight_cycle_up_async().
+- *
+- * Returns: The brightness in percent that was set.
+- **/
+-gint
+-gsd_backlight_cycle_up_finish (GsdBacklight *backlight,
+-                               GAsyncResult *res,
+-                               GError **error)
+-{
+-        return g_task_propagate_int (G_TASK (res), error);
+-}
+-
+-/**
+- * gsd_backlight_get_connector
+- * @backlight: a #GsdBacklight
+- *
+- * Return the connector for the display that is being controlled by the
+- * #GsdBacklight object. This connector can be passed to gnome-shell to show
+- * the on screen display only on the affected screen.
+- *
+- * Returns: The connector of the controlled output or NULL if unknown.
+- **/
+-const char*
+-gsd_backlight_get_connector (GsdBacklight *backlight)
+-{
+-        return backlight->backlight_connector;
+-}
+-
+-static void
+-gsd_backlight_get_property (GObject    *object,
+-                            guint       prop_id,
+-                            GValue     *value,
+-                            GParamSpec *pspec)
+-{
+-        GsdBacklight *backlight = GSD_BACKLIGHT (object);
+-
+-        switch (prop_id) {
+-        case PROP_BRIGHTNESS:
+-                g_value_set_int (value, gsd_backlight_get_brightness (backlight, NULL));
+-                break;
+-
+-        default:
+-                G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+-                break;
+-        }
+-}
+-
+-static void
+-update_mutter_backlight (GsdBacklight *backlight)
+-{
+-        GsdDisplayConfig *display_config =
+-                gnome_settings_bus_get_display_config_proxy ();
+-        GVariant *backlights = NULL;
+-        g_autoptr(GVariant) monitors = NULL;
+-        g_autoptr(GVariant) monitor = NULL;
+-        gboolean monitor_active = FALSE;
+-
+-        backlights = gsd_display_config_get_backlight (display_config);
+-        g_return_if_fail (backlights != NULL);
+-
+-        g_variant_get (backlights, "(u@aa{sv})",
+-                       &backlight->backlight_serial,
+-                       &monitors);
+-        if (g_variant_n_children (monitors) > 1) {
+-                g_warning ("Only handling the first out of %lu backlight monitors",
+-                           g_variant_n_children (monitors));
+-        }
+-
+-        if (g_variant_n_children (monitors) > 0) {
+-                g_variant_get_child (monitors, 0, "@a{sv}", &monitor);
+-
+-                g_clear_pointer (&backlight->backlight_connector, g_free);
+-                g_variant_lookup (monitor, "connector", "s",
+-                                  &backlight->backlight_connector);
+-                g_variant_lookup (monitor, "active", "b", &monitor_active);
+-                backlight->builtin_display_disabled = !monitor_active;
+-
+-                if (g_variant_lookup (monitor, "value", "i", &backlight->brightness_val)) {
+-                        g_variant_lookup (monitor, "min", "i", &backlight->brightness_min);
+-                        g_variant_lookup (monitor, "max", "i", &backlight->brightness_max);
+-                        backlight->initialized = TRUE;
+-                } else {
+-                        backlight->brightness_val = -1;
+-                        backlight->brightness_min = -1;
+-                        backlight->brightness_max = -1;
+-                }
+-        }
+-}
+-
+-static void
+-maybe_update_mutter_backlight (GsdBacklight *backlight)
+-{
+-        GsdDisplayConfig *display_config =
+-                gnome_settings_bus_get_display_config_proxy ();
+-        g_autofree char *name_owner = NULL;
+-
+-        if ((name_owner = g_dbus_proxy_get_name_owner (G_DBUS_PROXY (display_config))))
+-                update_mutter_backlight (backlight);
+-}
+-
+-static void
+-on_backlight_changed (GsdDisplayConfig *display_config,
+-                      GParamSpec       *pspec,
+-                      GsdBacklight     *backlight)
+-{
+-        gboolean builtin_display_disabled;
+-
+-        builtin_display_disabled = backlight->builtin_display_disabled;
+-        update_mutter_backlight (backlight);
+-
+-        if (builtin_display_disabled != backlight->builtin_display_disabled)
+-                g_object_notify_by_pspec (G_OBJECT (backlight), props[PROP_BRIGHTNESS]);
+-}
+-
+-static gboolean
+-gsd_backlight_initable_init (GInitable       *initable,
+-                             GCancellable    *cancellable,
+-                             GError         **error)
+-{
+-        GsdBacklight *backlight = GSD_BACKLIGHT (initable);
+-        GsdDisplayConfig *display_config =
+-                gnome_settings_bus_get_display_config_proxy ();
+-
+-        if (cancellable != NULL) {
+-                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+-                                     "GsdBacklight does not support cancelling initialization.");
+-                return FALSE;
+-        }
+-
+-        if (!display_config) {
+-                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+-                                     "GsdBacklight needs org.gnome.Mutter.DisplayConfig to function");
+-                return FALSE;
+-        }
+-
+-        g_signal_connect_object (display_config,
+-                                 "notify::backlight",
+-                                 G_CALLBACK (on_backlight_changed),
+-                                 backlight,
+-                                 0);
+-
+-        g_signal_connect_object (display_config,
+-                                 "notify::g-name-owner",
+-                                 G_CALLBACK (maybe_update_mutter_backlight),
+-                                 backlight,
+-                                 G_CONNECT_SWAPPED);
+-        maybe_update_mutter_backlight (backlight);
+-
+-        backlight->brightness_target = backlight->brightness_val;
+-        backlight->brightness_step =
+-                MAX(backlight->brightness_step,
+-                    BRIGHTNESS_STEP_AMOUNT(backlight->brightness_max - backlight->brightness_min + 1));
+-
+-        g_debug ("Step size for backlight is %i.", backlight->brightness_step);
+-
+-        return TRUE;
+-}
+-
+-static void
+-gsd_backlight_initable_iface_init (GInitableIface *iface)
+-{
+-  iface->init = gsd_backlight_initable_init;
+-}
+-
+-static void
+-gsd_backlight_class_init (GsdBacklightClass *klass)
+-{
+-        GObjectClass *object_class = G_OBJECT_CLASS (klass);
+-
+-        object_class->get_property = gsd_backlight_get_property;
+-
+-        props[PROP_BRIGHTNESS] = g_param_spec_int ("brightness", "The display brightness",
+-                                                   "The brightness of the internal display in percent.",
+-                                                   0, 100, 100,
+-                                                   G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+-
+-        g_object_class_install_properties (object_class, PROP_LAST, props);
+-}
+-
+-static void
+-gsd_backlight_init (GsdBacklight *backlight)
+-{
+-        backlight->brightness_target = -1;
+-        backlight->brightness_min = -1;
+-        backlight->brightness_max = -1;
+-        backlight->brightness_val = -1;
+-        backlight->brightness_step = 1;
+-}
+-
+-GsdBacklight *
+-gsd_backlight_new (GError **error)
+-{
+-        return GSD_BACKLIGHT (g_initable_new (GSD_TYPE_BACKLIGHT, NULL, error,
+-                                              NULL));
+-}
+-
+diff --git a/plugins/power/gsd-backlight.h b/plugins/power/gsd-backlight.h
+deleted file mode 100644
+index 56216b62..00000000
+--- a/plugins/power/gsd-backlight.h
++++ /dev/null
+@@ -1,76 +0,0 @@
+-/* -*- mode: c; style: linux -*-
+- * 
+- * Copyright (C) 2017 Red Hat, Inc.
+- *
+- * Written by: Benjamin Berg <bberg@redhat.com>
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2, or (at your option)
+- * any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+- */
+-
+-#ifndef _GSD_BACKLIGHT_H
+-#define _GSD_BACKLIGHT_H
+-
+-#include <glib.h>
+-#include <gio/gio.h>
+-
+-G_BEGIN_DECLS
+-
+-#define GSD_TYPE_BACKLIGHT gsd_backlight_get_type ()
+-G_DECLARE_FINAL_TYPE (GsdBacklight, gsd_backlight, GSD, BACKLIGHT, GObject);
+-
+-gint gsd_backlight_get_brightness        (GsdBacklight         *backlight,
+-                                          gint                 *target);
+-
+-void gsd_backlight_set_brightness_async  (GsdBacklight         *backlight,
+-                                          gint                  percentage,
+-                                          GCancellable         *cancellable,
+-                                          GAsyncReadyCallback   callback,
+-                                          gpointer              user_data);
+-void gsd_backlight_step_up_async         (GsdBacklight         *backlight,
+-                                          GCancellable         *cancellable,
+-                                          GAsyncReadyCallback   callback,
+-                                          gpointer              user_data);
+-void gsd_backlight_step_down_async       (GsdBacklight         *backlight,
+-                                          GCancellable         *cancellable,
+-                                          GAsyncReadyCallback   callback,
+-                                          gpointer              user_data);
+-void gsd_backlight_cycle_up_async        (GsdBacklight         *backlight,
+-                                          GCancellable         *cancellable,
+-                                          GAsyncReadyCallback   callback,
+-                                          gpointer              user_data);
+-
+-gint gsd_backlight_set_brightness_finish (GsdBacklight         *backlight,
+-                                          GAsyncResult         *res,
+-                                          GError              **error);
+-
+-gint gsd_backlight_step_up_finish        (GsdBacklight         *backlight,
+-                                          GAsyncResult         *res,
+-                                          GError              **error);
+-
+-gint gsd_backlight_step_down_finish      (GsdBacklight         *backlight,
+-                                          GAsyncResult         *res,
+-                                          GError              **error);
+-
+-gint gsd_backlight_cycle_up_finish       (GsdBacklight         *backlight,
+-                                          GAsyncResult         *res,
+-                                          GError              **error);
+-
+-const char*  gsd_backlight_get_connector (GsdBacklight         *backlight);
+-
+-GsdBacklight* gsd_backlight_new          (GError              **error);
+-
+-
+-G_END_DECLS
+-
+-#endif /* _GSD_BACKLIGHT_H */
+diff --git a/plugins/power/gsd-power-constants.h b/plugins/power/gsd-power-constants.h
+index 8bf9c641..6d1be7a7 100644
+--- a/plugins/power/gsd-power-constants.h
++++ b/plugins/power/gsd-power-constants.h
+@@ -33,10 +33,6 @@
+ /* The amount of time we'll undim if the machine is idle when plugged in */
+ #define POWER_UP_TIME_ON_AC                             15 /* seconds */
+ 
+-/* Default brightness values for the mock backlight used in the test suite */
+-#define GSD_MOCK_DEFAULT_BRIGHTNESS                     50
+-#define GSD_MOCK_MAX_BRIGHTNESS                        100
+-
+ /* When unplugging the external monitor, give a certain amount
+  * of time before suspending the laptop */
+ #define LID_CLOSE_SAFETY_TIMEOUT                        8 /* seconds */
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 5d1fb33b..21cdaa85 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -42,7 +42,6 @@
+ #include "gsm-presence-flag.h"
+ #include "gsm-manager-logout-mode.h"
+ #include "gpm-common.h"
+-#include "gsd-backlight.h"
+ #include "gnome-settings-profile.h"
+ #include "gnome-settings-bus.h"
+ #include "gsd-enums.h"
+@@ -69,7 +68,6 @@
+ #define GSD_POWER_DBUS_NAME                     GSD_DBUS_NAME ".Power"
+ #define GSD_POWER_DBUS_PATH                     GSD_DBUS_PATH "/Power"
+ #define GSD_POWER_DBUS_INTERFACE                GSD_DBUS_BASE_INTERFACE ".Power"
+-#define GSD_POWER_DBUS_INTERFACE_SCREEN         GSD_POWER_DBUS_INTERFACE ".Screen"
+ #define GSD_POWER_DBUS_INTERFACE_KEYBOARD       GSD_POWER_DBUS_INTERFACE ".Keyboard"
+ 
+ #define GSD_POWER_MANAGER_NOTIFY_TIMEOUT_SHORT          10 * 1000 /* ms */
+@@ -98,21 +96,6 @@
+ 
+ static const gchar introspection_xml[] =
+ "<node>"
+-"  <interface name='org.gnome.SettingsDaemon.Power.Screen'>"
+-"    <property name='Brightness' type='i' access='readwrite'/>"
+-"    <method name='StepUp'>"
+-"      <arg type='i' name='new_percentage' direction='out'/>"
+-"      <arg type='s' name='connector' direction='out'/>"
+-"    </method>"
+-"    <method name='StepDown'>"
+-"      <arg type='i' name='new_percentage' direction='out'/>"
+-"      <arg type='s' name='connector' direction='out'/>"
+-"    </method>"
+-"    <method name='Cycle'>"
+-"      <arg type='i' name='new_percentage' direction='out'/>"
+-"      <arg type='i' name='output_id' direction='out'/>"
+-"    </method>"
+-"  </interface>"
+ "  <interface name='org.gnome.SettingsDaemon.Power.Keyboard'>"
+ "    <property name='Brightness' type='i' access='readwrite'/>"
+ "    <property name='Steps' type='i' access='read'/>"
+@@ -174,8 +157,6 @@ struct _GsdPowerManager
+         gboolean                 battery_is_low; /* battery low, or UPS discharging */
+ 
+         /* Brightness */
+-        GsdBacklight            *backlight;
+-        gint                     pre_dim_brightness; /* level, not percentage */
+         GDBusProxy              *shell_brightness_proxy;
+ 
+         /* Keyboard */
+@@ -1330,7 +1311,7 @@ iio_proxy_claim_light (GsdPowerManager *manager, gboolean active)
+ {
+         if (manager->iio_proxy == NULL)
+                 return;
+-        if (!manager->backlight)
++        if (!shell_brightness_has_control (manager))
+                 return;
+ 	if (active && !manager->session_is_active)
+ 		return;
+@@ -1721,32 +1702,6 @@ backlight_iface_emit_changed (GsdPowerManager *manager,
+                                        NULL);
+ }
+ 
+-static void
+-backlight_notify_brightness_cb (GsdPowerManager *manager, GParamSpec *pspec, GsdBacklight *backlight)
+-{
+-        backlight_iface_emit_changed (manager, GSD_POWER_DBUS_INTERFACE_SCREEN,
+-                                      gsd_backlight_get_brightness (backlight, NULL), NULL);
+-}
+-
+-static void
+-display_backlight_dim (GsdPowerManager *manager,
+-                       gint idle_percentage)
+-{
+-        gint brightness;
+-
+-        if (!manager->backlight)
+-                return;
+-
+-        /* Fetch the current target brightness (not the actual display brightness)
+-         * and return if it is already lower than the idle percentage. */
+-        gsd_backlight_get_brightness (manager->backlight, &brightness);
+-        if (brightness < idle_percentage)
+-                return;
+-
+-        manager->pre_dim_brightness = brightness;
+-        gsd_backlight_set_brightness_async (manager->backlight, idle_percentage, NULL, NULL, NULL);
+-}
+-
+ static gboolean
+ kbd_backlight_dim (GsdPowerManager *manager,
+                    gint idle_percentage,
+@@ -1868,7 +1823,7 @@ idle_set_mode (GsdPowerManager *manager, GsdPowerIdleMode mode)
+                 /* display backlight */
+                 idle_percentage = g_settings_get_int (manager->settings,
+                                                       "idle-brightness");
+-                display_backlight_dim (manager, idle_percentage);
++                shell_brightness_set_dimming (manager, TRUE);
+ 
+                 /* keyboard backlight */
+                 ret = kbd_backlight_dim (manager, idle_percentage, &error);
+@@ -1911,14 +1866,7 @@ idle_set_mode (GsdPowerManager *manager, GsdPowerIdleMode mode)
+ 
+                 enable_monitors (manager);
+ 
+-                /* reset brightness if we dimmed */
+-                if (manager->backlight && manager->pre_dim_brightness >= 0) {
+-                        gsd_backlight_set_brightness_async (manager->backlight,
+-                                                            manager->pre_dim_brightness,
+-                                                            NULL, NULL, NULL);
+-                        /* XXX: Ideally we would do this from the async callback. */
+-                        manager->pre_dim_brightness = -1;
+-                }
++                shell_brightness_set_dimming (manager, FALSE);
+ 
+                 /* only toggle keyboard if present and already toggled off */
+                 if (manager->upower_kbd_proxy &&
+@@ -2919,7 +2867,7 @@ iio_proxy_changed (GsdPowerManager *manager)
+         gint pc;
+ 
+         /* no display hardware */
+-        if (!manager->backlight)
++        if (!shell_brightness_has_control (manager))
+                 return;
+ 
+         /* disabled */
+@@ -2969,8 +2917,7 @@ iio_proxy_changed (GsdPowerManager *manager)
+                  manager->ambient_accumulator);
+         pc = manager->ambient_accumulator;
+ 
+-        if (manager->backlight)
+-                gsd_backlight_set_brightness_async (manager->backlight, pc, NULL, NULL, NULL);
++        shell_brightness_set_auto_target (manager, pc / 100);
+ 
+         /* Assume setting worked. */
+         manager->ambient_percentage_old = pc;
+@@ -3079,14 +3026,6 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         manager->ambient_last_absolute = -1.f;
+         manager->ambient_last_time = 0;
+ 
+-        manager->backlight = gsd_backlight_new (NULL);
+-
+-        if (manager->backlight)
+-                g_signal_connect_object (manager->backlight,
+-                                         "notify::brightness",
+-                                         G_CALLBACK (backlight_notify_brightness_cb),
+-                                         manager, G_CONNECT_SWAPPED);
+-
+         /* Set up a delay inhibitor to be informed about suspend attempts */
+         g_signal_connect (manager->logind_proxy, "g-signal",
+                           G_CALLBACK (logind_proxy_signal_cb),
+@@ -3118,7 +3057,6 @@ gsd_power_manager_start (GsdPowerManager *manager,
+ 
+         manager->kbd_brightness_old = -1;
+         manager->kbd_brightness_pre_dim = -1;
+-        manager->pre_dim_brightness = -1;
+         g_signal_connect (manager->settings, "changed",
+                           G_CALLBACK (engine_settings_key_changed_cb), manager);
+         g_signal_connect (manager->settings_bus, "changed",
+@@ -3192,19 +3130,6 @@ gsd_power_manager_start (GsdPowerManager *manager,
+         if (!gnome_settings_is_wayland ())
+                 manager->xscreensaver_watchdog_timer_id = gsd_power_enable_screensaver_watchdog ();
+ 
+-        /* queue a signal in case the proxy from gnome-shell was created before we got here
+-           (likely, considering that to get here we need a reply from gnome-shell)
+-        */
+-        if (manager->backlight) {
+-                manager->ambient_percentage_old = gsd_backlight_get_brightness (manager->backlight, NULL);
+-                backlight_iface_emit_changed (manager, GSD_POWER_DBUS_INTERFACE_SCREEN,
+-                                              manager->ambient_percentage_old, NULL);
+-        } else {
+-                backlight_iface_emit_changed (manager, GSD_POWER_DBUS_INTERFACE_SCREEN, -1, NULL);
+-        }
+-
+-        gnome_settings_profile_end (NULL);
+-
+         gnome_settings_profile_end (NULL);
+         return TRUE;
+ }
+@@ -3339,91 +3264,6 @@ handle_method_call_keyboard (GsdPowerManager *manager,
+         }
+ }
+ 
+-static void
+-backlight_brightness_step_cb (GObject *object,
+-                              GAsyncResult *res,
+-                              gpointer user_data)
+-{
+-        GsdBacklight *backlight = GSD_BACKLIGHT (object);
+-        GDBusMethodInvocation *invocation = G_DBUS_METHOD_INVOCATION (user_data);
+-        GsdPowerManager *manager;
+-        GError *error = NULL;
+-        const char *connector;
+-        gint brightness;
+-
+-        manager = g_object_get_data (G_OBJECT (invocation), "gsd-power-manager");
+-        brightness = gsd_backlight_set_brightness_finish (backlight, res, &error);
+-
+-        /* ambient brightness no longer valid */
+-        manager->ambient_percentage_old = brightness;
+-        manager->ambient_norm_required = TRUE;
+-
+-        if (error) {
+-                g_dbus_method_invocation_take_error (invocation,
+-                                                     error);
+-        } else {
+-                connector = gsd_backlight_get_connector (backlight);
+-
+-                g_dbus_method_invocation_return_value (invocation,
+-                                                       g_variant_new ("(is)",
+-                                                                      brightness,
+-                                                                      connector ? connector : ""));
+-        }
+-}
+-
+-/* Callback */
+-static void
+-backlight_brightness_set_cb (GObject *object,
+-                             GAsyncResult *res,
+-                             gpointer user_data)
+-{
+-        GsdPowerManager *manager = GSD_POWER_MANAGER (user_data);
+-        GsdBacklight *backlight = GSD_BACKLIGHT (object);
+-        gint brightness;
+-
+-        /* Return the invocation. */
+-        brightness = gsd_backlight_set_brightness_finish (backlight, res, NULL);
+-
+-        if (brightness >= 0) {
+-                manager->ambient_percentage_old = brightness;
+-                manager->ambient_norm_required = TRUE;
+-        }
+-
+-        g_object_unref (manager);
+-}
+-
+-static void
+-handle_method_call_screen (GsdPowerManager *manager,
+-                           const gchar *method_name,
+-                           GVariant *parameters,
+-                           GDBusMethodInvocation *invocation)
+-{
+-        if (!manager->backlight) {
+-                g_dbus_method_invocation_return_error_literal (invocation,
+-                                                               GSD_POWER_MANAGER_ERROR, GSD_POWER_MANAGER_ERROR_NO_BACKLIGHT,
+-                                                               "No usable backlight could be found!");
+-                return;
+-        }
+-
+-        g_object_set_data_full (G_OBJECT (invocation), "gsd-power-manager", g_object_ref (manager), g_object_unref);
+-
+-        if (g_strcmp0 (method_name, "StepUp") == 0) {
+-                g_debug ("screen step up");
+-                gsd_backlight_step_up_async (manager->backlight, NULL, backlight_brightness_step_cb, invocation);
+-
+-        } else if (g_strcmp0 (method_name, "StepDown") == 0) {
+-                g_debug ("screen step down");
+-                gsd_backlight_step_down_async (manager->backlight, NULL, backlight_brightness_step_cb, invocation);
+-
+-        } else if (g_strcmp0 (method_name, "Cycle") == 0) {
+-                g_debug ("screen cycle up");
+-                gsd_backlight_cycle_up_async (manager->backlight, NULL, backlight_brightness_step_cb, invocation);
+-
+-        } else {
+-                g_assert_not_reached ();
+-        }
+-}
+-
+ static void
+ handle_method_call (GDBusConnection       *connection,
+                     const gchar           *sender,
+@@ -3445,12 +3285,7 @@ handle_method_call (GDBusConnection       *connection,
+         g_debug ("Calling method '%s.%s' for Power",
+                  interface_name, method_name);
+ 
+-        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_SCREEN) == 0) {
+-                handle_method_call_screen (manager,
+-                                           method_name,
+-                                           parameters,
+-                                           invocation);
+-        } else if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
++        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
+                 handle_method_call_keyboard (manager,
+                                              method_name,
+                                              parameters,
+@@ -3470,20 +3305,7 @@ handle_get_property_other (GsdPowerManager *manager,
+         gint32 value;
+ 
+ 
+-        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_SCREEN) == 0) {
+-                if (g_strcmp0 (property_name, "Brightness") != 0) {
+-                        g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+-                                     "No such property: %s", property_name);
+-                        return NULL;
+-                }
+-
+-                if (manager->backlight)
+-                        value = gsd_backlight_get_brightness (manager->backlight, NULL);
+-                else
+-                        value = -1;
+-
+-                retval = g_variant_new_int32 (value);
+-        } else if (manager->upower_kbd_proxy &&
++        if (manager->upower_kbd_proxy &&
+                    g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
+                 if (g_strcmp0 (property_name, "Brightness") == 0) {
+                         value = ABS_TO_PERCENTAGE (0,
+@@ -3522,8 +3344,7 @@ handle_get_property (GDBusConnection *connection,
+                 return NULL;
+         }
+ 
+-        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_SCREEN) == 0 ||
+-                   g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
++        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
+                 return handle_get_property_other (manager, interface_name, property_name, error);
+         } else {
+                 g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+@@ -3547,23 +3368,7 @@ handle_set_property_other (GsdPowerManager *manager,
+                 return FALSE;
+         }
+ 
+-        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_SCREEN) == 0) {
+-                /* To do error reporting we would need to handle the Set call
+-                 * instead of doing it through set_property.
+-                 * But none of our DBus API users actually read the result. */
+-                g_variant_get (value, "i", &brightness_value);
+-                if (manager->backlight) {
+-                        gsd_backlight_set_brightness_async (manager->backlight, brightness_value,
+-                                                            NULL,
+-                                                            backlight_brightness_set_cb, g_object_ref (manager));
+-                        return TRUE;
+-                } else {
+-                        g_set_error_literal (error, GSD_POWER_MANAGER_ERROR, GSD_POWER_MANAGER_ERROR_NO_BACKLIGHT,
+-                                             "No usable backlight could be found!");
+-                        return FALSE;
+-                }
+-
+-        } else if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
++        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
+                 g_variant_get (value, "i", &brightness_value);
+                 brightness_value = PERCENTAGE_TO_ABS (0, manager->kbd_brightness_max,
+                                                       brightness_value);
+@@ -3602,8 +3407,7 @@ handle_set_property (GDBusConnection *connection,
+                 return FALSE;
+         }
+ 
+-        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_SCREEN) == 0 ||
+-            g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
++        if (g_strcmp0 (interface_name, GSD_POWER_DBUS_INTERFACE_KEYBOARD) == 0) {
+                 return handle_set_property_other (manager, interface_name, property_name, value, error);
+         } else {
+                 g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+diff --git a/plugins/power/meson.build b/plugins/power/meson.build
+index e44f8ce9..e9a01308 100644
+--- a/plugins/power/meson.build
++++ b/plugins/power/meson.build
+@@ -1,6 +1,5 @@
+ sources = files(
+   'gpm-common.c',
+-  'gsd-backlight.c',
+   'gsd-power-manager.c',
+   'main.c'
+ )
+diff --git a/plugins/power/test.py b/plugins/power/test.py
+index 6633c00e..b475c964 100755
+--- a/plugins/power/test.py
++++ b/plugins/power/test.py
+@@ -106,11 +106,6 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         (self.mockmutter, self.obj_mockmutter) = self.spawn_server_template(dbusmock_template('mutter'))
+         self.addCleanup(self.stop_process, self.mockmutter)
+ 
+-        if 'legacy_brightness' in self.id():
+-            self.obj_mockmutter.MockSetBacklight('dp-1', True, 0, 15, 15)
+-        else:
+-            self.obj_mockmutter.MockSetBacklight('dp-1', True, 0, 100, 50)
+-
+         # start mock gnome-shell
+         (self.gnomeshell, self.obj_gnomeshell) = self.spawn_server_template(dbusmock_template('gnome-shell'))
+         self.addCleanup(self.stop_process, self.gnomeshell)
+@@ -164,14 +159,6 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+         # Disable PulseAudio output from libcanberra
+         env['CANBERRA_DRIVER'] = 'null'
+ 
+-        # Use dummy script as testing backlight helper
+-        env['GSD_BACKLIGHT_HELPER'] = os.path.join (project_root, 'plugins', 'power', 'test-backlight-helper')
+-        if 'POWER_LD_PRELOAD' in env:
+-            if 'LD_PRELOAD' in env and env['LD_PRELOAD']:
+-                env['LD_PRELOAD'] = ':'.join((env['POWER_LD_PRELOAD'], env['LD_PRELOAD']))
+-            else:
+-                env['LD_PRELOAD'] = env['POWER_LD_PRELOAD']
+-
+         self.start_plugin(env)
+         self.addCleanup(self.stop_plugin)
+ 
+@@ -212,18 +199,6 @@ class PowerPluginBase(gsdtestcase.GSDTestCase):
+     def get_status(self):
+         return self.obj_session_presence_props.Get('org.gnome.SessionManager.Presence', 'status')
+ 
+-    def get_brightness(self):
+-        (serial, bl) = self.obj_mockmutter.Get('org.gnome.Mutter.DisplayConfig', 'Backlight')
+-        assert bl
+-        bl = bl[0]
+-        assert bl
+-        assert bl['active'] == True
+-
+-        max_brightness = bl['max']
+-        value = bl['value']
+-
+-        return value
+-
+     def set_has_external_monitor(self, external):
+         if external:
+             val = b'1'
+@@ -431,7 +406,11 @@ class PowerPluginTestScreensaver(PowerPluginBase):
+         self.reset_idle_timer()
+         self.check_unblank(2)
+ 
+-        self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
++        mock_intf = dbus.Interface(self.obj_gnomeshell, dbusmock.MOCK_IFACE)
++        method_calls = mock_intf.GetMethodCalls("SetDimming")
++        self.assertEqual(len(method_calls), 1, 'did not call dim')
++        _, args = method_calls[-1]
++        self.assertTrue(args[0] == False, 'expected disabled dimming')
+ 
+         # Check for no blank before the normal blank timeout
+         self.check_no_blank(gsdpowerconstants.SCREENSAVER_TIMEOUT_BLANK - 4)
+@@ -666,6 +645,7 @@ class PowerPluginTestLid(PowerPluginBase):
+         self.obj_upower.Set('org.freedesktop.UPower', 'LidIsClosed', False)
+         self.obj_upower.EmitSignal('', 'Changed', '', [], dbus_interface='org.freedesktop.DBus.Mock')
+ 
++        # FIXME: this check fails
+         # Check for unblanking
+         self.check_unblank(2)
+ 
+@@ -687,18 +667,19 @@ class PowerPluginTestDim(PowerPluginBase):
+         self.settings_gsd_power['sleep-inactive-battery-timeout'] = idle_delay + 1
+         self.settings_gsd_power['sleep-inactive-battery-type'] = 'suspend'
+         Gio.Settings.sync()
+-        # This is an absolute percentage, and our brightness is 0..100
+-        dim_level = self.settings_gsd_power['idle-brightness'];
+ 
+         # Check that we're not idle
+         self.assertEqual(self.get_status(), gsdpowerenums.GSM_PRESENCE_STATUS_AVAILABLE)
+ 
+         # Wait and check we're not idle, but dimmed
+         self.check_dim(gsdpowerconstants.MINIMUM_IDLE_DIM_DELAY + 1)
+-        # Give time for the brightness to change
++        # Give time for the dimming to get called
+         time.sleep(2)
+-        level = self.get_brightness();
+-        self.assertTrue(level == dim_level, 'incorrect dim brightness (%d != %d)' % (level, dim_level))
++        mock_intf = dbus.Interface(self.obj_gnomeshell, dbusmock.MOCK_IFACE)
++        method_calls = mock_intf.GetMethodCalls("SetDimming")
++        self.assertEqual(len(method_calls), 1, 'did not call dim')
++        _, args = method_calls[-1]
++        self.assertTrue(args[0] == True, 'expected enabled dimming')
+ 
+         self.assertEqual(self.get_status(), gsdpowerenums.GSM_PRESENCE_STATUS_AVAILABLE)
+ 
+@@ -717,8 +698,13 @@ class PowerPluginTestDim(PowerPluginBase):
+         self.logind_obj.EmitSignal('', 'PrepareForSleep', 'b', [False], dbus_interface='org.freedesktop.DBus.Mock')
+         time.sleep(1)
+ 
+-        # And check that we have the pre-dim brightness
+-        self.assertTrue(self.get_brightness() == gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS , 'incorrect unblanked brightness (%d != %d)' % (self.get_brightness(), gsdpowerconstants.GSD_MOCK_DEFAULT_BRIGHTNESS))
++        # And check that we disabled dimming
++        time.sleep(2)
++        mock_intf = dbus.Interface(self.obj_gnomeshell, dbusmock.MOCK_IFACE)
++        method_calls = mock_intf.GetMethodCalls("SetDimming")
++        self.assertEqual(len(method_calls), 2, 'did not call dim')
++        _, args = method_calls[-1]
++        self.assertTrue(args[0] == False, 'expected disabled dimming')
+ 
+     def test_lid_close_inhibition(self):
+         '''Check that we correctly inhibit suspend with an external monitor'''
+@@ -1064,127 +1050,6 @@ class PowerPluginTestBrightness(PowerPluginBase):
+         self.check_dim(idle_delay + 2)
+ 
+ class PowerPluginTestBrightnessStep(PowerPluginBase):
+-    def test_brightness_stepping(self):
+-        '''Check that stepping the backlight works as expected'''
+-
+-        obj_gsd_power = self.session_bus_con.get_object(
+-            'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+-        obj_gsd_power_screen_iface = dbus.Interface(obj_gsd_power, 'org.gnome.SettingsDaemon.Power.Screen')
+-
+-        # We start at 50% and step by 5% each time
+-        obj_gsd_power_screen_iface.StepUp()
+-        self.assertEqual(self.get_brightness(), 55)
+-        obj_gsd_power_screen_iface.StepUp()
+-        self.assertEqual(self.get_brightness(), 60)
+-        obj_gsd_power_screen_iface.StepUp()
+-        self.assertEqual(self.get_brightness(), 65)
+-        obj_gsd_power_screen_iface.StepUp()
+-        self.assertEqual(self.get_brightness(), 70)
+-
+-        # Now, the same thing should work fine if we step multiple times,
+-        # even if we are so quick that compression will happen.
+-        # Use a list to keep rack of replies (as integer is immutable and would
+-        # not be modified in the outer scope)
+-        replies = [0]
+-
+-        def handle_reply(*args):
+-            replies[0] += 1
+-
+-        def last_reply(*args):
+-            replies[0] += 1
+-            loop.quit()
+-
+-        def error_handler(*args):
+-            loop.quit()
+-
+-        start = time.time()
+-        obj_gsd_power_screen_iface.StepDown(reply_handler=handle_reply, error_handler=error_handler)
+-        obj_gsd_power_screen_iface.StepDown(reply_handler=handle_reply, error_handler=error_handler)
+-        obj_gsd_power_screen_iface.StepDown(reply_handler=handle_reply, error_handler=error_handler)
+-        obj_gsd_power_screen_iface.StepDown(reply_handler=last_reply, error_handler=error_handler)
+-        loop = GLib.MainLoop()
+-        loop.run()
+-        stop = time.time()
+-
+-        # The calls need to be returned in order. As we got the last reply, all
+-        # others must have been received too.
+-        self.assertEqual(replies[0], 4)
+-        # Four steps down, so back at 50%
+-        self.assertEqual(self.get_brightness(), 50)
+-        # And compression must have happened, so it should take less than 0.8s
+-        self.assertLess(stop - start, 0.8)
+-
+-    def test_brightness_compression(self):
+-        '''Check that compression also happens when setting the property'''
+-
+-        # Now test that the compression works correctly.
+-        # NOTE: Relies on the implementation detail, that the property setter
+-        #       returns immediately rather than waiting for the brightness to
+-        #       be updated.
+-        # Should this ever be fixed, then this will need to be changed to use
+-        # async dbus calls similar to the stepping code
+-
+-        obj_gsd_power = self.session_bus_con.get_object(
+-            'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+-        obj_gsd_power_prop_iface = dbus.Interface(obj_gsd_power, dbus.PROPERTIES_IFACE)
+-
+-        # Quickly ramp the brightness up
+-        for brightness in range(70, 91):
+-            obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', brightness)
+-
+-        # The brightness of 80 should be in effect after slightly more than
+-        # 0.4 seconds. If compression does not work as expected, this would take
+-        # more than 5 seconds for the 20 steps.
+-        time.sleep(2.0)
+-        self.assertEqual(self.get_brightness(), 90)
+-
+-    def test_brightness_step(self):
+-        for l in self.plugin_startup_msgs:
+-            if b'Step size for backlight is 5.' in l:
+-                break
+-        else:
+-            self.fail('Step size is not 5')
+-
+-    def test_legacy_brightness_step(self):
+-        for l in self.plugin_startup_msgs:
+-            if b'Step size for backlight is 1.' in l:
+-                break
+-        else:
+-            self.fail('Step size is not 1')
+-
+-    def test_legacy_brightness_rounding(self):
+-        obj_gsd_power = self.session_bus_con.get_object(
+-            'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power')
+-        obj_gsd_power_prop_iface = dbus.Interface(obj_gsd_power, dbus.PROPERTIES_IFACE)
+-
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 0)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 0)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 10)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 2)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 20)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 3)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 25)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 4)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 49)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 7)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 50)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 8)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 56)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 8)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 57)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 9)
+-        obj_gsd_power_prop_iface.Set('org.gnome.SettingsDaemon.Power.Screen', 'Brightness', 98)
+-        time.sleep(0.6)
+-        self.assertEqual(self.get_brightness(), 15)
+-
+     def test_power_saver_on_low_battery(self):
+         '''Check that the power-saver profile gets held when low on battery'''
+ 
+-- 
+2.51.1
+
+
+From 97f64190a96ae8d0d89f8da09253d61f8bf34f44 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 11 Aug 2025 11:43:57 +0200
+Subject: [PATCH 08/10] power: Fix boolean property value extraction
+
+The code here is expecting a "(b)" GVariant signature, which does
+not match with "b" as sent by GNOME Shell. This produces a barrage of
+warnings like:
+
+  gsd-power[11982]: the GVariant format string '(b)' has a type of '(b)' but the given value has a type of 'b'
+  gsd-power[11982]: g_variant_get: assertion 'valid_format_string (format_string, TRUE, value)' failed
+
+And other side effects. Fix this boolean value extraction, to fix
+the warnings and detect correctly that GNOME Shell is in charge of
+backlight brightness.
+
+Fixes: f7555c02 ("power: Add new dimming and auto brightness API based on Shell.Brightness")
+---
+ plugins/power/gsd-power-manager.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 21cdaa85..1dcb172d 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1183,7 +1183,6 @@ static gboolean
+ shell_brightness_has_control (GsdPowerManager *manager)
+ {
+         g_autoptr (GVariant) has_control_variant = NULL;
+-        gboolean has_control;
+ 
+         if (!manager->shell_brightness_proxy)
+                 return FALSE;
+@@ -1195,8 +1194,7 @@ shell_brightness_has_control (GsdPowerManager *manager)
+         if (!has_control_variant)
+                 return FALSE;
+ 
+-        g_variant_get (has_control_variant, "(b)", &has_control);
+-        return has_control;
++        return g_variant_get_boolean (has_control_variant);
+ }
+ 
+ static void
+-- 
+2.51.1
+
+
+From 24586c310c3f1f84a8481764932417f28f1ec67c Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 1 Sep 2025 12:19:08 +0200
+Subject: [PATCH 09/10] power: Refactor light sensor claiming/release
+
+Refactor the code so checks are a bit less all over the place,
+and there's a single decision point for whether the light sensor
+should be claimed or not.
+---
+ plugins/power/gsd-power-manager.c | 44 ++++++++++++++++++++++---------
+ 1 file changed, 32 insertions(+), 12 deletions(-)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index 1dcb172d..f114fee3 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -146,6 +146,8 @@ struct _GsdPowerManager
+         gboolean                 lid_is_present;
+         gboolean                 lid_is_closed;
+         gboolean                 session_is_active;
++        gboolean                 screen_blanked;
++        gboolean                 light_claimed;
+         UpClient                *up_client;
+         GPtrArray               *devices_array;
+         UpDevice                *device_composite;
+@@ -1303,16 +1305,27 @@ light_released_cb (GObject      *source_object,
+         }
+ }
+ 
++static gboolean
++iio_proxy_should_claim_light (GsdPowerManager *manager)
++{
++        if (!shell_brightness_has_control (manager))
++                return FALSE;
++        if (!manager->session_is_active)
++                return FALSE;
++        if (manager->screen_blanked)
++                return FALSE;
++
++        return TRUE;
++}
+ 
+ static void
+-iio_proxy_claim_light (GsdPowerManager *manager, gboolean active)
++iio_proxy_claim_light (GsdPowerManager *manager,
++                       gboolean         active)
+ {
+         if (manager->iio_proxy == NULL)
+                 return;
+-        if (!shell_brightness_has_control (manager))
++        if (manager->light_claimed == !!active)
+                 return;
+-	if (active && !manager->session_is_active)
+-		return;
+ 
+         /* FIXME:
+          * Remove when iio-sensor-proxy sends events only to clients instead
+@@ -1336,6 +1349,14 @@ iio_proxy_claim_light (GsdPowerManager *manager, gboolean active)
+                            manager->cancellable,
+                            active ? light_claimed_cb : light_released_cb,
+                            manager);
++
++        manager->light_claimed = !!active;
++}
++
++static void
++iio_proxy_maybe_claim_light (GsdPowerManager *manager)
++{
++        iio_proxy_claim_light (manager, iio_proxy_should_claim_light (manager));
+ }
+ 
+ typedef enum {
+@@ -1359,8 +1380,9 @@ set_power_saving_mode (GsdPowerManager  *manager,
+ static void
+ enable_monitors (GsdPowerManager *manager)
+ {
+-        iio_proxy_claim_light (manager, TRUE);
+         set_power_saving_mode (manager, GSD_POWER_SAVE_MODE_ON);
++        manager->screen_blanked = FALSE;
++        iio_proxy_maybe_claim_light (manager);
+ 
+         g_debug ("TESTSUITE: Unblanked screen");
+ }
+@@ -1368,8 +1390,9 @@ enable_monitors (GsdPowerManager *manager)
+ static void
+ disable_monitors (GsdPowerManager *manager)
+ {
+-        iio_proxy_claim_light (manager, FALSE);
+         set_power_saving_mode (manager, GSD_POWER_SAVE_MODE_OFF);
++        manager->screen_blanked = TRUE;
++        iio_proxy_maybe_claim_light (manager);
+ 
+         g_debug ("TESTSUITE: Blanked screen");
+ }
+@@ -2634,12 +2657,9 @@ engine_session_properties_changed_cb (GDBusProxy      *session,
+                 manager->session_is_active = active;
+                 /* when doing the fast-user-switch into a new account,
+                  * ensure the new account is undimmed and with the backlight on */
+-                if (active) {
++                if (active)
+                         idle_set_mode (manager, GSD_POWER_IDLE_MODE_NORMAL);
+-                        iio_proxy_claim_light (manager, TRUE);
+-                } else {
+-                        iio_proxy_claim_light (manager, FALSE);
+-                }
++                iio_proxy_maybe_claim_light (manager);
+                 g_variant_unref (v);
+ 
+                 sync_lid_inhibitor (manager);
+@@ -2949,7 +2969,7 @@ iio_proxy_appeared_cb (GDBusConnection *connection,
+                                                "net.hadess.SensorProxy",
+                                                NULL,
+                                                NULL);
+-        iio_proxy_claim_light (manager, TRUE);
++        iio_proxy_maybe_claim_light (manager);
+ }
+ 
+ static void
+-- 
+2.51.1
+
+
+From 4c4343bb00b47a2c9fdb713a9318058fed400c05 Mon Sep 17 00:00:00 2001
+From: Richard Acayan <mailingradian@gmail.com>
+Date: Mon, 8 Sep 2025 19:04:40 -0400
+Subject: [PATCH 10/10] power: Do not poll light sensor when automatic
+ brightness is disabled
+
+When automatic brightness is disabled, ambient light sensor events are
+eventually ignored, but they still get processed by the hardware and
+operating system if gsd-power enables it. Disable the light sensor when
+automatic brightness is disabled to save some processing power.
+---
+ plugins/power/gsd-power-manager.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/plugins/power/gsd-power-manager.c b/plugins/power/gsd-power-manager.c
+index f114fee3..b7b5b642 100644
+--- a/plugins/power/gsd-power-manager.c
++++ b/plugins/power/gsd-power-manager.c
+@@ -1314,6 +1314,8 @@ iio_proxy_should_claim_light (GsdPowerManager *manager)
+                 return FALSE;
+         if (manager->screen_blanked)
+                 return FALSE;
++	if (!g_settings_get_boolean (manager->settings, "ambient-enabled"))
++		return FALSE;
+ 
+         return TRUE;
+ }
+@@ -2638,6 +2640,10 @@ engine_settings_key_changed_cb (GSettings *settings,
+                         disable_power_saver (manager);
+                 return;
+         }
++        if (g_str_equal (key, "ambient-enabled")) {
++                iio_proxy_maybe_claim_light (manager);
++		return;
++        }
+ }
+ 
+ static void
+-- 
+2.51.1
+
